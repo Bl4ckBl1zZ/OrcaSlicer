@@ -55,3 +55,10 @@ __pycache__/
 /.test/
 docs/superpowers/
 ctest_results.xml
+
+# Linux runtime (Bambu plug-in through WSL2): outputs of the Linux-side build
+tools/slicer_linux_runtime_host/runtime/
+tools/slicer_linux_runtime/rootfs/*.tar
+# ...and its installer scripts, which the install_* rule above would hide
+!tools/slicer_linux_runtime/wsl/install_runtime.cmd
+!tools/slicer_linux_runtime/wsl/install_runtime.ps1

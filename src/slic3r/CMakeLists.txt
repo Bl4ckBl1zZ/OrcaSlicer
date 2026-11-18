@@ -740,6 +740,10 @@ set(SLIC3R_GUI_SOURCES
     Utils/AstroBox.cpp
     Utils/AstroBox.hpp
     Utils/bambu_networking.hpp
+    Utils/SlicerLinuxRuntime/SlicerLinuxRuntimeConfig.cpp
+    Utils/SlicerLinuxRuntime/SlicerLinuxRuntimeConfig.hpp
+    Utils/SlicerLinuxRuntime/SlicerLinuxRuntimeInstaller.cpp
+    Utils/SlicerLinuxRuntime/SlicerLinuxRuntimeInstaller.hpp
     Utils/Bonjour.cpp
     Utils/Bonjour.hpp
     Utils/MeshInspect.cpp
@@ -937,6 +941,9 @@ else ()
     add_library(libslic3r_gui STATIC ${SLIC3R_GUI_SOURCES})
 endif ()
 target_include_directories(libslic3r_gui PRIVATE Utils ${CMAKE_CURRENT_BINARY_DIR})
+
+# Orca: Bambu network plug-in through the Linux runtime (WSL2) on Windows.
+add_subdirectory(Utils/SlicerLinuxRuntime)
 
 if (WIN32)
     target_include_directories(libslic3r_gui SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../deps/WebView2/include)

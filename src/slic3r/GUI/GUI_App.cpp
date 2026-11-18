@@ -242,6 +242,8 @@
 
 #include "slic3r/Utils/NetworkAgentFactory.hpp"
 #include "slic3r/Utils/BBLNetworkPlugin.hpp"
+#include "slic3r/Utils/SlicerLinuxRuntime/SlicerLinuxRuntimeConfig.hpp"
+#include "slic3r/Utils/SlicerLinuxRuntime/SlicerLinuxRuntimeInstaller.hpp"
 #include "slic3r/Utils/bambu_networking.hpp"
 
 #include "PluginsDialog.hpp"
@@ -1462,6 +1464,10 @@ int GUI_App::download_plugin(std::string name, std::string package_name, Install
 #else
     std::string os_type = "windows";
 #endif
+    // Orca: the Linux runtime runs Bambu's Linux plug-in, so that is the package to fetch.
+    if (SlicerLinuxRuntime::should_select_linux_component_package(name))
+        os_type = SlicerLinuxRuntime::linux_component_package_os_type();
+    BOOST_LOG_TRIVIAL(info) << "[download_plugin]: request header X-BBL-OS-Type: " << os_type;
 
     // get_url
     std::string  url = get_plugin_url(name, app_config->get_country_code());
@@ -1787,6 +1793,37 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
 
     close_zip_reader(&archive);
 
+    // Orca: Linux runtime. What was just extracted is Bambu's Linux plug-in; make sure it is, then
+    // import (or refresh) the WSL2 distro it runs in. Nothing is renamed: the runtime keeps a
+    // single unversioned libbambu_networking.so and reports its real version when loaded.
+    const bool linux_runtime_plugin = SlicerLinuxRuntime::should_select_linux_component_package(name);
+    if (linux_runtime_plugin) {
+        for (const std::string& so_name : {SlicerLinuxRuntime::linux_component_library_name(),
+                                           SlicerLinuxRuntime::linux_source_library_name()}) {
+            std::string reason;
+            if (!SlicerLinuxRuntime::validate_linux_so_binary((plugin_folder / so_name).string(), &reason)) {
+                BOOST_LOG_TRIVIAL(error) << "[install_plugin] Linux runtime: " << so_name << " is not a usable Linux library: " << reason;
+                if (pro_fn) { pro_fn(InstallStatusUnzipFailed, 0, cancel); }
+                return InstallStatusUnzipFailed;
+            }
+        }
+
+        std::string sync_reason;
+        if (!SlicerLinuxRuntime::sync_runtime_package(plugin_folder, &sync_reason))
+            BOOST_LOG_TRIVIAL(warning) << "[install_plugin] Linux runtime package not refreshed: " << sync_reason;
+
+        BOOST_LOG_TRIVIAL(info) << "[install_plugin] Linux runtime: installing/verifying the WSL distro";
+        const auto runtime = SlicerLinuxRuntime::install_wsl_runtime(
+            plugin_folder, data_dir_path / "ota" / "plugins",
+            [this, &cancel_fn]() { return m_networking_cancel_update || (cancel_fn && cancel_fn()); });
+        if (!runtime.ok()) {
+            BOOST_LOG_TRIVIAL(error) << "[install_plugin] Linux runtime installation failed, exit code " << runtime.exit_code;
+            if (pro_fn) { pro_fn(InstallStatusUnzipFailed, 0, cancel); }
+            return InstallStatusUnzipFailed;
+        }
+        BOOST_LOG_TRIVIAL(info) << "[install_plugin] Linux runtime ready";
+    }
+
     if (name == "plugins") {
         std::string config_version = app_config->get_network_plugin_version();
         if (config_version.empty()) {
@@ -1827,7 +1864,9 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
         }
     }
 
-    {
+    // Orca: no backup copy with the Linux runtime - the folder holds the runtime package (rootfs
+    // image included) and a backup folder could not be loaded from anyway.
+    if (!linux_runtime_plugin) {
         fs::path dir_path(plugin_folder);
         if (fs::exists(dir_path) && fs::is_directory(dir_path)) {
             int file_count = 0, file_index = 0;
@@ -2738,6 +2777,19 @@ void GUI_App::init_webview_runtime()
 }
 #endif
 
+#ifdef _WIN32
+// Orca: the embedded browser (WebView2) keeps its profile - cookies and web sign-ins included -
+// under %LOCALAPPDATA%\<app name>\EBWebView whatever the data directory is. A relocated data
+// directory (a portable data_dir folder or --datadir) is meant to be self-contained, so its
+// browser profile moves with it; the WebView2 loader honours this variable.
+static void keep_webview_profile_in_data_dir()
+{
+    const boost::filesystem::path profile = boost::filesystem::path(data_dir()) / "EBWebView";
+    _wputenv_s(L"WEBVIEW2_USER_DATA_FOLDER", profile.wstring().c_str());
+    BOOST_LOG_TRIVIAL(info) << "WebView2 profile: " << profile.string();
+}
+#endif
+
 void GUI_App::init_app_config()
 {
 	// Profiles for the alpha are stored into the PrusaSlicer-alpha directory to not mix with the current release.
@@ -2774,6 +2826,9 @@ void GUI_App::init_app_config()
         boost::filesystem::path app_data_dir_path = _app_folder / "data_dir";
         if (boost::filesystem::exists(app_data_dir_path)) {
             set_data_dir(app_data_dir_path.string());
+#ifdef _WIN32
+            keep_webview_profile_in_data_dir();
+#endif
         }
         else{
             std::string data_dir = wxStandardPaths::Get().GetUserDataDir().ToUTF8().data();
@@ -2796,6 +2851,9 @@ void GUI_App::init_app_config()
 
     } else {
         m_datadir_redefined = true;
+#ifdef _WIN32
+        keep_webview_profile_in_data_dir();
+#endif
     }
 
     // start log here
@@ -3900,6 +3958,14 @@ bool GUI_App::on_init_inner()
 
 void GUI_App::copy_network_if_available()
 {
+    // Orca: Linux runtime. Keep <data_dir>/plugins in step with the runtime package this build
+    // ships (forwarder module, Linux host, WSL scripts and rootfs). Runs before the plug-in loads.
+    if (SlicerLinuxRuntime::enabled()) {
+        std::string reason;
+        if (!SlicerLinuxRuntime::sync_runtime_package(boost::filesystem::path(data_dir()) / "plugins", &reason))
+            BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": Linux runtime package not available: " << reason;
+    }
+
     if (app_config->get("update_network_plugin") != "true")
         return;
 
@@ -3946,6 +4012,23 @@ bool GUI_App::install_network_plugin_from_ota(bool& had_cache)
     had_cache = true;
 
     std::string network_library, player_library, live555_library, network_library_dst, player_library_dst, live555_library_dst;
+    const bool linux_runtime = SlicerLinuxRuntime::enabled();
+    if (linux_runtime) {
+        // Orca: the OTA cache holds the Linux plug-in; it is installed under its own names.
+        network_library = cache_folder.string() + "/" + SlicerLinuxRuntime::linux_component_library_name();
+        player_library = cache_folder.string() + "/" + SlicerLinuxRuntime::linux_source_library_name();
+        live555_library = cache_folder.string() + "/liblive555.so";
+        network_library_dst = plugin_folder.string() + "/" + SlicerLinuxRuntime::linux_component_library_name();
+        player_library_dst = plugin_folder.string() + "/" + SlicerLinuxRuntime::linux_source_library_name();
+        live555_library_dst = plugin_folder.string() + "/liblive555.so";
+        for (const std::string* cached : {&network_library, &player_library}) {
+            std::string reason;
+            if (boost::filesystem::exists(*cached) && !SlicerLinuxRuntime::validate_linux_so_binary(*cached, &reason)) {
+                BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": cached " << *cached << " is not a usable Linux library: " << reason;
+                return false;
+            }
+        }
+    } else {
 #if defined(_MSC_VER) || defined(_WIN32)
     network_library = cache_folder.string() + "/bambu_networking.dll";
     player_library = cache_folder.string() + "/BambuSource.dll";
@@ -3968,6 +4051,7 @@ bool GUI_App::install_network_plugin_from_ota(bool& had_cache)
     player_library_dst = plugin_folder.string() + "/libBambuSource.so";
     live555_library_dst = plugin_folder.string() + "/liblive555.so";
 #endif
+    } // !linux_runtime
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": checking network_library " << network_library << ", player_library " << player_library;
     if (!boost::filesystem::exists(plugin_folder)) {
@@ -4011,8 +4095,22 @@ bool GUI_App::install_network_plugin_from_ota(bool& had_cache)
             return false;
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": Copying network library from " << network_library << " to " << network_library_dst << " successfully.";
 
-        app_config->set_network_plugin_version(cached_version);
+        // Orca: the Linux runtime's stored identity stays the series (the file is unversioned).
+        app_config->set_network_plugin_version(linux_runtime ? network_plugin_series(cached_version) : cached_version);
         app_config->save();
+    }
+
+    if (linux_runtime) {
+        // Orca: the remaining Linux libraries of the package (Agora SDK) travel with the two above.
+        boost::system::error_code ec;
+        for (boost::filesystem::directory_iterator it(cache_folder, ec), end; !ec && it != end; it.increment(ec)) {
+            const std::string file_name = it->path().filename().string();
+            if (it->path().extension() != ".so" || it->path().string() == network_library ||
+                it->path().string() == player_library || it->path().string() == live555_library)
+                continue;
+            if (!install_file(it->path().string(), plugin_folder.string() + "/" + file_name))
+                return false;
+        }
     }
 
     if (boost::filesystem::exists(player_library)) {
@@ -4081,6 +4179,25 @@ bool GUI_App::on_init_network(bool try_backup)
             app_config->save();
         }
 
+        // Orca: the Linux runtime marshals the current plug-in generation only; an older series
+        // left in the configuration (or picked before the runtime was in use) is replaced.
+        if (SlicerLinuxRuntime::enabled() && !config_version.empty() &&
+            network_plugin_abi(config_version) != NetworkAbi::Current) {
+            BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": Linux runtime: replacing configured plugin version "
+                                       << config_version << " with " << get_latest_network_version();
+            config_version = get_latest_network_version();
+            app_config->set_network_plugin_version(config_version);
+            app_config->save();
+        }
+        // Orca: a first-time install that was interrupted leaves no Linux plug-in behind; go
+        // straight to the download prompt instead of reporting a broken runtime.
+        if (SlicerLinuxRuntime::enabled() && !config_version.empty() &&
+            !BBLNetworkPlugin::versioned_library_exists(config_version)) {
+            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": Linux runtime: Linux plug-in not downloaded yet";
+            config_version.clear();
+        }
+        bool linux_runtime_repair_tried = false;
+
         if (config_version.empty()) {
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": no version configured, need to download";
             m_networking_need_update = true;
@@ -4133,6 +4250,17 @@ bool GUI_App::on_init_network(bool try_backup)
                 }
             } else {
                 BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": on_init_network, load dll failed";
+                // Orca: Linux runtime. The usual cause is the WSL distro (removed, never imported
+                // on this machine, or stale after a rootfs update); import it once and try again.
+                if (SlicerLinuxRuntime::enabled() && !linux_runtime_repair_tried) {
+                    linux_runtime_repair_tried = true;
+                    const boost::filesystem::path data_dir_path(data_dir());
+                    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": Linux runtime: installing/verifying the WSL distro and retrying";
+                    if (SlicerLinuxRuntime::install_wsl_runtime(data_dir_path / "plugins", data_dir_path / "ota" / "plugins").ok()) {
+                        load_agent_dll = Slic3r::NetworkAgent::initialize_network_module(false, config_version);
+                        goto __retry;
+                    }
+                }
                 // A failed install can leave the config naming a build that never made it to disk;
                 // fall back to the installed latest instead of dropping the user into the re-download
                 // flow. Only when the configured library is genuinely absent, though - a pinned series

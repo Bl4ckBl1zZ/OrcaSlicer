@@ -1,5 +1,6 @@
 #include "BBLCloudServiceAgent.hpp"
 #include "BBLNetworkPlugin.hpp"
+#include "SlicerLinuxRuntime/SlicerLinuxRuntimeConfig.hpp"
 
 #include <boost/log/trivial.hpp>
 #include "CloudProvider.hpp"
@@ -65,6 +66,11 @@ std::map<std::string, std::string> BBLCloudServiceAgent::get_extra_header()
     extra_headers.emplace("X-BBL-Client-Name", "BambuStudio");
 
     extra_headers.emplace("X-BBL-Client-Version", GUI::wxGetApp().get_bbl_client_version());
+    // Orca: with the Linux runtime the plug-in that talks to the cloud is the Linux build running
+    // on Linux, so the headers describe that system - exactly what the Linux application sends.
+    const bool linux_runtime = SlicerLinuxRuntime::enabled();
+    if (linux_runtime)
+        extra_headers.emplace("X-BBL-OS-Type", SlicerLinuxRuntime::linux_component_package_os_type());
 #if defined(__WINDOWS__)
 #ifdef _M_X64
     extra_headers.emplace("X-BBL-OS-Type", "windows");
@@ -82,6 +88,11 @@ std::map<std::string, std::string> BBLCloudServiceAgent::get_extra_header()
 
     std::ostringstream os_version;
     os_version << major << "." << minor << "." << micro;
+    if (linux_runtime) {
+        const std::string linux_os_version = BBLNetworkPlugin::instance().linux_runtime_os_version();
+        if (!linux_os_version.empty())
+            extra_headers.emplace("X-BBL-OS-Version", linux_os_version);
+    }
     extra_headers.emplace("X-BBL-OS-Version", os_version.str());
 
     auto& app = GUI::wxGetApp();

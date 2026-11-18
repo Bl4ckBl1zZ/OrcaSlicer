@@ -53,6 +53,7 @@
 #include "slic3r/GUI/NotificationManager.hpp"
 #include "slic3r/Utils/Http.hpp"
 #include "slic3r/Utils/bambu_networking.hpp"
+#include "slic3r/Utils/SlicerLinuxRuntime/SlicerLinuxRuntimeConfig.hpp"
 #include "slic3r/Config/Version.hpp"
 #include "slic3r/GUI/MarkdownTip.hpp"
 #include "libslic3r/miniz_extension.hpp"
@@ -835,6 +836,12 @@ bool PresetUpdater::priv::get_cached_plugins_version(std::string& cached_version
     player_library  = cache_folder.string() + "/libBambuSource.so";
     live555_library = cache_folder.string() + "/liblive555.so";
 #endif
+    // Orca: with the Linux runtime the OTA cache holds the Linux build of the plug-in.
+    if (SlicerLinuxRuntime::enabled()) {
+        network_library = cache_folder.string() + "/" + SlicerLinuxRuntime::linux_component_library_name();
+        player_library  = cache_folder.string() + "/" + SlicerLinuxRuntime::linux_source_library_name();
+        live555_library = cache_folder.string() + "/liblive555.so";
+    }
 
     std::string changelog_file = cache_folder.string() + "/network_plugins.json";
     if (boost::filesystem::exists(network_library)
@@ -940,6 +947,16 @@ void PresetUpdater::priv::sync_plugins(std::string http_url, std::string plugin_
         BOOST_LOG_TRIVIAL(info) << boost::format("set X-BBL-OS-Type to windows_arm");
     }
 #endif
+    // Orca: with the Linux runtime the update to look for is the Linux build of the plug-in.
+    const bool linux_runtime = SlicerLinuxRuntime::enabled();
+    const std::map<std::string, std::string> headers_before_linux_runtime = Slic3r::Http::get_extra_headers();
+    if (linux_runtime) {
+        std::map<std::string, std::string> current_headers = headers_before_linux_runtime;
+        current_headers["X-BBL-OS-Type"] = SlicerLinuxRuntime::linux_component_package_os_type();
+        Slic3r::Http::set_extra_headers(current_headers);
+        BOOST_LOG_TRIVIAL(info) << "[Orca Updater] sync_plugins: Linux runtime, X-BBL-OS-Type "
+                                << SlicerLinuxRuntime::linux_component_package_os_type();
+    }
     try {
         std::map<std::string, Resource> resources
         {
@@ -950,6 +967,8 @@ void PresetUpdater::priv::sync_plugins(std::string http_url, std::string plugin_
     catch (std::exception& e) {
         BOOST_LOG_TRIVIAL(warning) << format("[Orca Updater] sync_plugins: %1%", e.what());
     }
+    if (linux_runtime)
+        Slic3r::Http::set_extra_headers(headers_before_linux_runtime);
 #if defined(__WINDOWS__)
     if (GUI::wxGetApp().is_running_on_arm64() && !GUI::wxGetApp().use_legacy_network_plugin()) {
         //set back

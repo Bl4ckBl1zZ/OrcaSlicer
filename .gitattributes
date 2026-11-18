@@ -13,3 +13,11 @@
 
 # OCCT BRep fixtures, kept byte for byte as OCCT wrote them.
 *.brep -text
+
+# Linux runtime (Bambu plug-in through WSL2): shell scripts without an extension, run inside
+# the Linux distro.
+tools/slicer_linux_runtime/wsl/slicer_linux_runtime_host text eol=lf
+# ...the batch wrapper of its installer, read by cmd.exe...
+tools/slicer_linux_runtime/wsl/install_runtime.cmd text eol=crlf
+# ...and the CA bundle handed to the Linux plug-in, kept as it was tested.
+resources/cert/ca-certificates.crt text eol=lf

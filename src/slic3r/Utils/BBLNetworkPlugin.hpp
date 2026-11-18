@@ -290,6 +290,10 @@ public:
     // ========================================================================
 
     NetworkLibraryLoadError get_load_error() const { return m_load_error; }
+
+    // Orca: Linux runtime (Windows). The OS version of the Linux system the plug-in runs in,
+    // "major.minor.micro" as wxGetOsVersion() reports it there; empty when not loaded.
+    std::string linux_runtime_os_version();
     void clear_load_error();
     void set_load_error(const std::string& message,
                         const std::string& technical_details,
@@ -450,6 +454,9 @@ private:
 
     // Load error state
     NetworkLibraryLoadError m_load_error;
+
+    // Cached answer for linux_runtime_os_version(), cleared on unload
+    std::string m_linux_runtime_os_version;
 
     // ABI generation of the currently loaded library
     NetworkAbi m_network_abi{NetworkAbi::Unsupported};

@@ -1,5 +1,6 @@
 #include "BBLNetworkPlugin.hpp"
 #include "NetworkAgent.hpp"
+#include "SlicerLinuxRuntime/SlicerLinuxRuntimeConfig.hpp"
 
 #include <mutex>
 #include <boost/filesystem/path.hpp>
@@ -13,6 +14,7 @@
 #include <boost/log/trivial.hpp>
 #include <boost/format.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/nowide/convert.hpp>
 #include "bambu_networking.hpp"
 #include <string>
 #include <vector>
@@ -20,6 +22,7 @@
 #include "libslic3r/Utils.hpp"
 #include "slic3r/Utils/FileTransferUtils.hpp"
 #include "slic3r/GUI/I18N.hpp"
+#include <nlohmann/json.hpp>
 #include <cstddef>
 #include <cstring>
 #include <cwchar>
@@ -42,6 +45,68 @@ const char* network_abi_name(NetworkAbi abi)
         if (AVAILABLE_NETWORK_VERSIONS[i].abi == abi)
             return AVAILABLE_NETWORK_VERSIONS[i].version;
     return "unsupported";
+}
+
+// Orca: Bambu plug-in through the Linux runtime (Windows). The files the forwarder module
+// needs next to it before it can start the Linux host inside the WSL2 distro. Checked here so a
+// missing piece is reported as a load error instead of a host that never answers.
+bool linux_runtime_preflight(const boost::filesystem::path& plugin_folder, std::string& detail)
+{
+    const std::string required_files[] = {
+        SlicerLinuxRuntime::runtime_module_file_name(),
+        SlicerLinuxRuntime::host_executable_file_name(),
+        SlicerLinuxRuntime::host_executable_file_name() + "_abi1",
+        SlicerLinuxRuntime::host_executable_file_name() + "_abi0",
+        SlicerLinuxRuntime::windows_wsl_distro_file_name(),
+        SlicerLinuxRuntime::windows_wsl_import_script_file_name(),
+        SlicerLinuxRuntime::windows_wsl_validate_script_file_name(),
+        SlicerLinuxRuntime::windows_wsl_bootstrap_script_file_name(),
+        SlicerLinuxRuntime::windows_wsl_rootfs_file_name(),
+        SlicerLinuxRuntime::linux_component_library_name(),
+        SlicerLinuxRuntime::linux_source_library_name(),
+        "ca-certificates.crt",
+        "slicer_base64.cer",
+    };
+    for (const std::string& name : required_files) {
+        boost::system::error_code ec;
+        if (!boost::filesystem::is_regular_file(plugin_folder / name, ec)) {
+            detail = "missing required Linux runtime file: " + name;
+            return false;
+        }
+    }
+    for (const std::string& name : {SlicerLinuxRuntime::linux_component_library_name(),
+                                    SlicerLinuxRuntime::linux_source_library_name()}) {
+        std::string reason;
+        if (!SlicerLinuxRuntime::validate_linux_so_binary((plugin_folder / name).string(), &reason)) {
+            detail = name + ": " + reason;
+            return false;
+        }
+    }
+    detail = "ok";
+    return true;
+}
+
+std::string list_regular_files(const boost::filesystem::path& folder)
+{
+    std::string out;
+    boost::system::error_code ec;
+    for (boost::filesystem::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
+        if (!boost::filesystem::is_regular_file(it->status()))
+            continue;
+        if (!out.empty())
+            out += ", ";
+        out += it->path().filename().string();
+    }
+    return out;
+}
+
+void set_process_env(const char* name, const std::string& value)
+{
+#if defined(_MSC_VER) || defined(_WIN32)
+    _putenv_s(name, value.c_str());
+#else
+    setenv(name, value.c_str(), 1);
+#endif
 }
 
 } // namespace
@@ -105,9 +170,36 @@ int BBLNetworkPlugin::initialize(bool using_backup, const std::string& version)
         return -1;
     }
 
+    // Orca: with the Linux runtime the module to load is always the forwarder, whatever version
+    // is configured; the forwarder reports the version of the Linux plug-in it finds.
+    const bool linux_runtime = SlicerLinuxRuntime::enabled();
+    if (linux_runtime) {
+        // The forwarder reads both from the environment when it starts the host.
+        set_process_env("SLICER_LINUX_RUNTIME_COMPONENT_DIR", plugin_folder.string());
+        set_process_env("SLICER_LINUX_RUNTIME_WINDOWS_COMPONENT_CACHE_DIR", (data_dir_path / "ota" / "plugins").string());
+
+        std::string preflight_detail;
+        if (!linux_runtime_preflight(plugin_folder, preflight_detail)) {
+            BOOST_LOG_TRIVIAL(error) << "BBLNetworkPlugin::initialize: Linux runtime preflight failed: " << preflight_detail;
+            BOOST_LOG_TRIVIAL(info) << "BBLNetworkPlugin::initialize: plugin folder files: " << list_regular_files(plugin_folder);
+            set_load_error(_u8L("Linux runtime for the network plug-in is not ready"), preflight_detail, plugin_folder.string());
+            return -1;
+        }
+
+        library = SlicerLinuxRuntime::runtime_library_path(plugin_folder);
+#if defined(_MSC_VER) || defined(_WIN32)
+        m_networking_module = LoadLibraryW(boost::nowide::widen(library).c_str());
+        if (!m_networking_module)
+            set_load_error(_u8L("Network library failed to load"),
+                           "LoadLibrary failed for the Linux runtime forwarder, error " + std::to_string(::GetLastError()), library);
+#else
+        m_networking_module = dlopen(library.c_str(), RTLD_LAZY);
+#endif
+    }
+
     // Auto-migration: If loading legacy version and versioned library doesn't exist,
     // but unversioned legacy library does exist, copy it to versioned format
-    if (is_legacy_version(version)) {
+    if (!linux_runtime && is_legacy_version(version)) {
         boost::filesystem::path versioned_path;
         boost::filesystem::path legacy_path;
 #if defined(_MSC_VER) || defined(_WIN32)
@@ -139,6 +231,7 @@ int BBLNetworkPlugin::initialize(bool using_backup, const std::string& version)
 #else
     std::string versioned_name = std::string("lib") + std::string(BAMBU_NETWORK_LIBRARY) + "_" + version + ".so";
 #endif
+    if (!linux_runtime) { // Orca: the native plug-in; the Linux runtime forwarder was loaded above
     library = using_backup ? (plugin_folder / versioned_name).string()
                            : resolve_library_path(version);
 
@@ -173,6 +266,7 @@ int BBLNetworkPlugin::initialize(bool using_backup, const std::string& version)
         );
     }
 #endif
+    } // !linux_runtime
 
     if (!m_networking_module) {
         if (!m_load_error.has_error) {
@@ -197,6 +291,29 @@ int BBLNetworkPlugin::initialize(bool using_backup, const std::string& version)
     const std::string loaded_version = m_get_version ? m_get_version() : std::string();
     m_network_abi = network_plugin_abi(loaded_version.empty() ? version : loaded_version);
 
+    if (linux_runtime) {
+        // get_version() is the first call that reaches the Linux host: an empty answer means
+        // the host did not start or could not load Bambu's Linux libraries.
+        if (loaded_version.empty()) {
+            std::string detail = "The forwarder loaded, but the Linux host did not report a plug-in version";
+            if (auto last_error = reinterpret_cast<const char* (*)()>(get_function("bambu_network_get_last_error_msg"))) {
+                const char* msg = last_error();
+                if (msg && *msg)
+                    detail += std::string(": ") + msg;
+            }
+            BOOST_LOG_TRIVIAL(error) << "BBLNetworkPlugin::initialize: " << detail;
+            unload();
+            set_load_error(_u8L("Linux runtime for the network plug-in is not ready"), detail, library);
+            return -1;
+        }
+        // The forwarder and the host marshal the current generation's layouts only.
+        if (m_network_abi != NetworkAbi::Current && m_network_abi != NetworkAbi::Unsupported) {
+            BOOST_LOG_TRIVIAL(warning) << "BBLNetworkPlugin::initialize: Linux runtime supports the "
+                << network_abi_name(NetworkAbi::Current) << " series only, loaded " << loaded_version;
+            m_network_abi = NetworkAbi::Unsupported;
+        }
+    }
+
     // A library reporting a series this build has no ABI for stays loaded but uncallable -
     // check_networking_version() then reports it as incompatible and offers the update flow.
     if (m_network_abi == NetworkAbi::Unsupported) {
@@ -205,6 +322,7 @@ int BBLNetworkPlugin::initialize(bool using_backup, const std::string& version)
     }
 
     BOOST_LOG_TRIVIAL(info) << "BBLNetworkPlugin::initialize: abi=" << network_abi_name(m_network_abi)
+        << ", linux_runtime=" << (linux_runtime ? "true" : "false")
         << ", library=" << library
         << ", version=" << (loaded_version.empty() ? "unknown" : loaded_version)
         << ", send_message=" << (m_send_message ? "loaded" : "null")
@@ -224,6 +342,15 @@ int BBLNetworkPlugin::unload()
     destroy_agent();
 
     UnloadFTModule();
+
+    // Orca: with the Linux runtime both handles are the forwarder module; stop its host process
+    // and worker threads before the module goes away, and release the module only once.
+    if (m_source_module == m_networking_module)
+        m_source_module = NULL;
+    if (m_networking_module) {
+        if (auto shutdown_forwarder = reinterpret_cast<void (*)()>(get_function("slicer_linux_runtime_forwarder_shutdown")))
+            shutdown_forwarder();
+    }
 
 #if defined(_MSC_VER) || defined(_WIN32)
     if (m_networking_module) {
@@ -250,6 +377,7 @@ int BBLNetworkPlugin::unload()
     // Safe to reset only because every pointer was nulled just above and every dispatcher is
     // guarded on a non-null pointer, so no stale generation is reachable.
     m_network_abi = NetworkAbi::Unsupported;
+    m_linux_runtime_os_version.clear();
 
     return 0;
 }
@@ -257,6 +385,22 @@ int BBLNetworkPlugin::unload()
 bool BBLNetworkPlugin::is_loaded() const
 {
     return m_networking_module != nullptr;
+}
+
+std::string BBLNetworkPlugin::linux_runtime_os_version()
+{
+    if (!m_linux_runtime_os_version.empty() || !m_networking_module || !SlicerLinuxRuntime::enabled())
+        return m_linux_runtime_os_version;
+
+    // Forwarder-only entry point: a JSON description of the Linux side.
+    if (auto capabilities = reinterpret_cast<std::string (*)()>(get_function("slicer_linux_runtime_auth_capabilities"))) {
+        try {
+            m_linux_runtime_os_version = nlohmann::json::parse(capabilities()).value("linux_os_version", std::string());
+        } catch (const std::exception& e) {
+            BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": " << e.what();
+        }
+    }
+    return m_linux_runtime_os_version;
 }
 
 std::string BBLNetworkPlugin::get_version() const
@@ -328,6 +472,12 @@ void* BBLNetworkPlugin::get_source_module()
 {
     if ((m_source_module) || (!m_networking_module))
         return m_source_module;
+
+    // Orca: the forwarder also exports the BambuSource (camera) entry points.
+    if (SlicerLinuxRuntime::enabled()) {
+        m_source_module = m_networking_module;
+        return m_source_module;
+    }
 
     std::string library;
     std::string data_dir_str = data_dir();
@@ -412,6 +562,13 @@ std::string BBLNetworkPlugin::get_versioned_library_path(const std::string& vers
     boost::filesystem::path data_dir_path(data_dir_str);
     auto plugin_folder = data_dir_path / "plugins";
 
+    // Orca: the Linux runtime keeps a single, unversioned Linux plug-in of the current series.
+    if (SlicerLinuxRuntime::enabled()) {
+        if (network_plugin_abi(version) != NetworkAbi::Current)
+            return (plugin_folder / ("unsupported_" + version + ".so")).string(); // never exists
+        return (plugin_folder / SlicerLinuxRuntime::linux_component_library_name()).string();
+    }
+
 #if defined(_MSC_VER) || defined(_WIN32)
     return (plugin_folder / (std::string(BAMBU_NETWORK_LIBRARY) + "_" + version + ".dll")).string();
 #elif defined(__WXMAC__)
@@ -495,6 +652,9 @@ void BBLNetworkPlugin::remove_legacy_library()
 std::vector<std::string> BBLNetworkPlugin::scan_plugin_versions()
 {
     std::vector<std::string> discovered_versions;
+    // Orca: no versioned libraries to discover with the Linux runtime (see get_versioned_library_path).
+    if (SlicerLinuxRuntime::enabled())
+        return discovered_versions;
     std::string data_dir_str = data_dir();
     boost::filesystem::path plugin_folder = boost::filesystem::path(data_dir_str) / "plugins";
 
@@ -908,6 +1068,9 @@ std::vector<NetworkLibraryVersionInfo> get_all_available_versions(const std::str
     std::set<std::string> all_known_versions;
 
     for (size_t i = 0; i < AVAILABLE_NETWORK_VERSIONS_COUNT; ++i) {
+        // Orca: the Linux runtime marshals the current generation only, so offer nothing else.
+        if (SlicerLinuxRuntime::enabled() && AVAILABLE_NETWORK_VERSIONS[i].abi != NetworkAbi::Current)
+            continue;
         result.push_back(NetworkLibraryVersionInfo::from_static(AVAILABLE_NETWORK_VERSIONS[i]));
         if (!result.back().warning.empty())
             result.back().warning = GUI::I18N::translate_utf8(result.back().warning);
