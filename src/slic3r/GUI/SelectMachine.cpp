@@ -3606,6 +3606,33 @@ void SelectMachineDialog::on_send_print()
     if (obj_ == nullptr) { return; }
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ", print_job: for send task, current printer id =  " << m_printer_last_select << std::endl;
+    // Orca: BMCU - allow one automatic re-send of this job after an auto-ignored 050x-409D
+    if (!m_is_auto_retry_0500_409d_invoke) {
+        m_auto_retry_0500_409d_used = false;
+    }
+    m_is_auto_retry_0500_409d_invoke = false;
+    dev->set_auto_retry_print_ui_callback([token = std::weak_ptr<int>(m_token), this](const std::string& dev_id) {
+        if (token.expired()) {
+            return false;
+        }
+        if (!dev_id.empty() && dev_id != m_printer_last_select) {
+            return false;
+        }
+        if (m_auto_retry_0500_409d_used) {
+            return false;
+        }
+        m_auto_retry_0500_409d_used = true;
+        m_is_auto_retry_0500_409d_invoke = true;
+        CallAfter([token, this]() {
+            if (token.expired()) {
+                return;
+            }
+            m_is_canceled = false;
+            prepare_mode(false);
+            on_send_print();
+        });
+        return true;
+    });
     show_status(PrintDialogStatus::PrintStatusSending);
 
     m_status_bar->reset();
@@ -3947,6 +3974,9 @@ void SelectMachineDialog::on_print_job_cancel(wxCommandEvent &evt)
 {
     BOOST_LOG_TRIVIAL(info) << "print_job: canceled";
 
+    if (auto* dev = Slic3r::GUI::wxGetApp().getDeviceManager()) {
+        dev->set_auto_retry_print_ui_callback(nullptr);
+    }
     EnableEditing(true);
     show_status(PrintDialogStatus::PrintStatusInit);
     // enter prepare mode
@@ -6473,6 +6503,9 @@ void SelectMachineDialog::show_init() {
 
 SelectMachineDialog::~SelectMachineDialog()
 {
+    if (auto* dev = Slic3r::GUI::wxGetApp().getDeviceManager()) {
+        dev->set_auto_retry_print_ui_callback(nullptr);
+    }
     delete m_refresh_timer;
     if (m_timelapse_check_timer)
         m_timelapse_check_timer->Stop();

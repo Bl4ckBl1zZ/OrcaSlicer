@@ -70,6 +70,9 @@ private:
     int                                 timeout_count = 0;
     int                                 m_connect_try_times = 0;
     bool                                m_is_in_sending_mode{ false };
+    // Orca: BMCU print auto-retry (one retry per user-initiated send)
+    bool                                m_auto_retry_0500_409d_used{ false };
+    bool                                m_is_auto_retry_0500_409d_invoke{ false };
     bool                                m_is_rename_mode{ false };
     bool                                enable_prepare_mode{ true };
     bool                                m_export_3mf_cancel{ false };

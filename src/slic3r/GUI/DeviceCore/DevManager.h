@@ -2,6 +2,7 @@
 #include <chrono>
 #include <map>
 #include <mutex>
+#include <functional>
 #include "libslic3r/CommonDefs.hpp"
 
 #include <string>
@@ -41,6 +42,11 @@ private:
     std::string local_selected_machine;                         /* dev_id */
     std::map<std::string, MachineObject*> localMachineList;     /* dev_id -> MachineObject*, localMachine SSDP   */
     std::map<std::string, MachineObject*> userMachineList;      /* dev_id -> MachineObject*  cloudMachine of User */
+
+    // Orca: BMCU. Re-sends the print job of the open send dialog after an auto-ignored
+    // 050x-409D print error (see auto_ignore_print_error_if_needed in DeviceManager.cpp).
+    std::mutex autoRetryPrintUiCallbackMutex;
+    std::function<bool(const std::string&)> m_auto_retry_print_ui_callback;
 
 public:
     DeviceManager(NetworkAgent* agent = nullptr, bool enable_refresher = true,
@@ -110,6 +116,11 @@ public:
     std::map<std::string, MachineObject*> get_my_machine_list(const std::string& agent_id = "");
     std::map<std::string, MachineObject*> get_my_cloud_machine_list(const std::string& agent_id = "");
     void modify_device_name(std::string dev_id, std::string dev_name, const std::string& provider);
+
+    // Orca: BMCU print auto-retry. The send dialogs register a callback while a job is being
+    // sent; it returns true when it took the retry for the given device.
+    void set_auto_retry_print_ui_callback(std::function<bool(const std::string&)> callback);
+    bool trigger_auto_retry_print_ui_callback(const std::string& dev_id);
 
     // id of the currently live IPrinterAgent (IPrinterAgent::get_agent_info().id), or empty if
     // m_agent has no printer agent set yet. Pass to get_my_machine_list()/get_my_cloud_machine_list()
