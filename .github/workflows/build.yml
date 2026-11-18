@@ -27,8 +27,11 @@ on:
 # Nothing by default; every job states what it needs.
 permissions: {}
 
+# A new run replaces a running one for the same ref and the same choice of platforms. The
+# choice is part of the group so that a "macOS only" run does not cancel a Windows build that
+# has been going for hours (both are empty for a tag).
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.ref }}-win-${{ inputs.windows }}-mac-${{ inputs.macos }}
   cancel-in-progress: true
 
 jobs:
