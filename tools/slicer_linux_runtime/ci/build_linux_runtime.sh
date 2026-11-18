@@ -99,6 +99,29 @@ fi
 gcc --version | head -n 1
 echo "$(cmake --version | head -n 1), ninja $(ninja --version)"
 
+# The packaged libcrypto is a copy of this machine's. Runner images trail the archive by weeks
+# or months, so bring OpenSSL to the current patch level before it is copied. Best effort: a
+# machine where nothing may be installed packages the library it has.
+update_openssl() {
+    local package run_as_root=()
+    command -v apt-get >/dev/null 2>&1 && command -v dpkg-query >/dev/null 2>&1 || return 0
+    if [[ "$(id -u)" -ne 0 ]]; then
+        command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null || return 0
+        run_as_root=(sudo)
+    fi
+    package="$(dpkg-query -S '*/libcrypto.so.3' 2>/dev/null | head -n 1 | cut -d: -f1)"
+    [[ -n "$package" ]] || return 0
+    if ! { "${run_as_root[@]}" env DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+            && "${run_as_root[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --only-upgrade "$package" libssl-dev; }; then
+        echo "warning: OpenSSL could not be brought up to date; packaging the installed one" >&2
+    fi
+    dpkg-query -W -f='${Package} ${Version}\n' "$package" libssl-dev
+}
+if [[ "$INSTALL_PACKAGES" == 1 ]]; then
+    step "OpenSSL patch level"
+    update_openssl
+fi
+
 # ---------------------------------------------------------------------------------------------
 # Host binaries
 # ---------------------------------------------------------------------------------------------
