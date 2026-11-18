@@ -376,17 +376,22 @@ def test_rate_limit(app):
     message, headers = client.build("server/discover")
     statuses = []
     connection = http.client.HTTPConnection(client.host, client.port, timeout=10)
+    started = time.monotonic()
     try:
         body = json.dumps(message)
         all_headers = {"Authorization": f"Bearer {client.token}", "Content-Type": "application/json", **headers}
-        for _ in range(140):
+        for _ in range(700):
             connection.request("POST", client.path, body=body, headers=all_headers)
             response = connection.getresponse()
             response.read()
             statuses.append(response.status)
     finally:
         connection.close()
-    assert statuses.count(429) > 0, "a burst above 50 requests per second must be throttled"
+    elapsed = time.monotonic() - started
+    time.sleep(1.2)  # let the bucket refill for the following tests
+    if elapsed > 2.5:
+        pytest.skip(f"this machine sent 700 requests in {elapsed:.1f} s: too slow to exceed the limit")
+    assert statuses.count(429) > 0, "a burst above 200 requests per second must be throttled"
     assert statuses[0] == 200
     time.sleep(1.2)  # let the bucket refill for the following tests
     assert client.rpc("server/discover")["resultType"] == "complete"

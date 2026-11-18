@@ -26,8 +26,8 @@ struct HttpServerConfig
     // Requests carrying an Origin header are rejected unless the origin is listed here.
     std::vector<std::string> allowed_origins;
     size_t                   max_body_bytes { 8 * 1024 * 1024 };
-    int                      max_connections { 16 };
-    int                      max_requests_per_second { 50 };
+    int                      max_connections { 32 };
+    int                      max_requests_per_second { 200 };
 };
 
 // One line of the activity log.
