@@ -363,8 +363,10 @@ json printer_json()
     if (plates.get_plate_count() > 0) {
         const BoundingBoxf3 volume = plates.get_plate(0)->get_build_volume();
         const Vec3d         size = volume.size();
-        out["bed"] = json::array({round4(size.x()), round4(size.y())});
-        out["height"] = round4(size.z());
+        // The build volume is padded by a scene epsilon; report the nominal size.
+        auto nominal = [](double v) { return std::round(v * 100.) / 100.; };
+        out["bed"] = json::array({nominal(size.x()), nominal(size.y())});
+        out["height"] = nominal(size.z());
     }
     if (const auto* nozzles = preset.config.option<ConfigOptionFloats>("nozzle_diameter"); nozzles != nullptr) {
         out["extruders"] = nozzles->values.size();
