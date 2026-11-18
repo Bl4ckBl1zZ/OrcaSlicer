@@ -25,9 +25,13 @@ for version tags:
 
 **Linux job on a self-hosted runner.** The `linux-runtime` job (the bridge's Linux host and the WSL rootfs)
 runs on GitHub's `ubuntu-24.04` unless the repository variable `LINUX_RUNNER` (*Settings > Secrets and
-variables > Actions > Variables*) holds a runner label; delete the variable to go back. The job installs
-its own packages with `apt-get` and needs neither Docker nor `sudo` when it runs as root. Its logic is
-`tools/slicer_linux_runtime/ci/build_linux_runtime.sh`, which also runs outside Actions.
+variables > Actions > Variables*) holds a runner label, for the graysmith runners `graysmith-4cpu`. Windows
+and macOS always build on GitHub's runners. If graysmith is down, the job is never picked up and the run
+sits queued (the job's 30-minute timeout only counts once a runner has taken it): cancel the run, delete
+the variable and start it again. *Run workflow* with only the Linux runtime option ticked tries the runner without
+starting a Windows build. The job installs its own packages with `apt-get` and needs neither Docker nor
+`sudo` when it runs as root. Its logic is `tools/slicer_linux_runtime/ci/build_linux_runtime.sh`, which
+also runs outside Actions.
 
 ---
 

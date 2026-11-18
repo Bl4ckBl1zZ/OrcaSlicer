@@ -20,6 +20,10 @@ on:
         description: Build macOS arm64 (unsigned)
         type: boolean
         default: true
+      linux:
+        description: Build the Linux runtime on its own (to try out a Linux runner)
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
@@ -29,9 +33,9 @@ permissions: {}
 
 # A new run replaces a running one for the same ref and the same choice of platforms. The
 # choice is part of the group so that a "macOS only" run does not cancel a Windows build that
-# has been going for hours (both are empty for a tag).
+# has been going for hours (all are empty for a tag).
 concurrency:
-  group: build-${{ github.ref }}-win-${{ inputs.windows }}-mac-${{ inputs.macos }}
+  group: build-${{ github.ref }}-win-${{ inputs.windows }}-mac-${{ inputs.macos }}-linux-${{ inputs.linux }}
   cancel-in-progress: true
 
 jobs:
@@ -40,8 +44,11 @@ jobs:
   # the script, which runs the same way outside Actions.
   linux-runtime:
     name: Linux runtime (host + WSL rootfs)
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows }}
-    # GitHub-hosted unless the LINUX_RUNNER repository variable names a self-hosted runner label.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows || inputs.linux }}
+    # GitHub-hosted unless the LINUX_RUNNER repository variable names a self-hosted runner label
+    # (graysmith-4cpu). The timeout only counts once a runner has taken the job: while no runner
+    # with that label answers, the job stays queued (for up to a day) and with it the Windows
+    # build. Cancel such a run and delete the variable to go back to the GitHub-hosted runner.
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
     permissions:
@@ -68,6 +75,7 @@ jobs:
   windows-x64:
     name: Windows x64
     needs: linux-runtime
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows }}
     # Not upstream's windows-latest: that image carries Visual Studio 2026 and upstream builds on
     # it with clang-cl. The bridge has only ever been compiled with Visual Studio 2022's cl, so
     # this job uses the same compiler and generator as the tested local build.
