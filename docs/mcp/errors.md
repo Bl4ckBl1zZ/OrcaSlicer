@@ -1,0 +1,49 @@
+# MCP error codes
+
+A tool failure the agent can act on is a tool result with `isError: true` whose text is
+
+```json
+{"error": {"code": "stale_id",
+           "message": "`targets[0]`: o57 does not exist (any more).",
+           "hint": "Ids change when a project is loaded and disappear when the item is deleted. Call scene_get for the current ids.",
+           "details": {"id": "o57"}}}
+```
+
+`message` says what is wrong, `hint` what to do next, `details` carries data to act on. A failed
+call may also carry `dialogs`, `notes`, and, when it failed after changing something, `undo`,
+`rev` and `journal`.
+
+Add a code to this page when a tool introduces one. Prefer an existing code.
+
+## Core
+
+| Code | Meaning | What the agent should do |
+|---|---|---|
+| `invalid_argument` | The arguments violate the schema or contradict each other. | Fix the named argument; the message quotes what is accepted. |
+| `stale_id` | An id (object, instance, volume, plate, job, journal entry) does not exist. | Call `scene_get` (or `job_status`, `history`) for current ids. |
+| `ui_busy` | The window cannot be interrupted now: a dialog is open, a drag or UI job is in progress, or the application is not responding. `details.reason` says which. | Retry shortly; `app_status` shows what is busy. |
+| `dialog_blocked` | The application raised a dialog the call did not expect. `details.dialogs` quotes it; it was dismissed with its non-destructive button. | Check the state; repeat the call with the argument that answers the question, if there is one. |
+| `conflict` | `if_rev` did not match the scene revision, or the target changed under a long operation. | Re-read the scene and retry. |
+| `timeout` | The call did not finish in time; it may still be running. | Check the state before repeating. |
+| `cancelled` | The client stopped waiting, or the server is shutting down. | - |
+| `too_large` | The result would be too large to return. | Narrow the query (`limit`, `offset`, fewer ids, lower detail). |
+| `internal` | A bug in the server. The application log has the details. | Report it. |
+| `nothing_to_undo`, `nothing_to_redo` | The undo or redo list is empty, or the application refused. | `history` lists the steps. |
+| `already_reverted`, `not_revertible` | Journal entry state. | - |
+| `not_running`, `not_cancellable` | Job state. | `job_status` shows the job. |
+| `path_denied` | The path is outside the folders the agent may use, or has a file type that is not accepted. `details.allowed` lists the folders. | Use an allowed folder (`app_status` lists them). |
+| `not_found` | The file does not exist. | Check the path. |
+| `exists` | The file to write already exists. | Pass `overwrite: true` or choose another name. |
+
+## Protocol errors
+
+JSON-RPC errors, not tool results:
+
+| Code | HTTP | Meaning |
+|---|---|---|
+| `-32700` | 400 | The body is not valid JSON. |
+| `-32600` | 400 | Not a JSON-RPC 2.0 request (also: a batch, a forbidden `Host` or `Origin` with 403, too many requests with 429). |
+| `-32601` | 404 (modern), 200 (legacy) | Unknown method. |
+| `-32602` | 400 (modern), 200 (legacy) | Invalid params: unknown tool, arguments not an object, missing `_meta` fields. |
+| `-32020` | 400 | Header mismatch: a mirrored header is missing or differs from the body. |
+| `-32022` | 400 | Unsupported protocol version; `data.supported` lists the versions. |
