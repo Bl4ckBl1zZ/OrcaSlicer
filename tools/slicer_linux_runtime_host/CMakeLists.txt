@@ -24,6 +24,9 @@ option(SLICER_LINUX_RUNTIME_WITH_CURL
 
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
+# Headers only: SlicerLinuxRuntimeConfig.hpp, shared with the application, takes
+# boost::filesystem::path arguments. Nothing of Boost is linked.
+find_package(Boost REQUIRED)
 find_package(nlohmann_json CONFIG QUIET)
 if (SLICER_LINUX_RUNTIME_WITH_CURL)
     find_package(CURL REQUIRED)
@@ -66,6 +69,7 @@ function(add_host_variant target_name abi_value)
         target_link_libraries(${target_name} PRIVATE CURL::libcurl ZLIB::ZLIB OpenSSL::SSL)
     endif()
     target_link_libraries(${target_name} PRIVATE
+        Boost::headers
         OpenSSL::Crypto
         Threads::Threads
         ${CMAKE_DL_LIBS}

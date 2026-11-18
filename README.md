@@ -1,3 +1,36 @@
+# OrcaSlicer 2.5.1 + Bambu Linux bridge (private fork)
+
+This is [OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer) **2.5.1** with a "Bambu Linux bridge" for
+Windows: on Windows x64 the application does not load Bambu's Windows network plug-in but a forwarder
+module (`slicer_linux_runtime.dll`) that runs Bambu's **Linux** plug-in (series **02.08.04**) inside a small
+dedicated WSL2 distro. Bambu's plug-in is not part of this repository or of any build; the application
+downloads it from Bambu's servers when the network plug-in is installed. The fork also acknowledges and
+retries a print that A1 firmware rejects with error `050x-409D` when a BMCU is attached. Everything below
+the line is upstream's README.
+
+**Builds** come from the `Build` workflow (`.github/workflows/build.yml`), which runs only on demand and
+for version tags:
+
+- *Actions > Build > Run workflow* builds Windows x64 and/or macOS arm64; the results are the
+  `windows-x64-portable` and `macos-arm64-dmg` artifacts of the run. Run it once from `main` first: that
+  fills the dependency caches every later run (tags included) restores.
+- Pushing a tag that starts with `v` on a commit of this fork (for example `v2.5.1-bridge.1`) builds both
+  and attaches them to a **draft** release for that tag.
+- Windows: a portable zip. Unzip it anywhere and run `orca-slicer.exe`; it needs WSL2 and keeps its
+  settings in the `data_dir` folder next to the executable, apart from a stock OrcaSlicer.
+- macOS: Apple Silicon only, **not signed with an Apple Developer ID and not notarized** (ad-hoc signature
+  only). After copying OrcaSlicer to Applications, clear the download quarantine once with
+  `xattr -cr /Applications/OrcaSlicer.app`. The macOS build has no bridge: it uses Bambu's macOS plug-in
+  like stock OrcaSlicer.
+
+**Linux job on a self-hosted runner.** The `linux-runtime` job (the bridge's Linux host and the WSL rootfs)
+runs on GitHub's `ubuntu-24.04` unless the repository variable `LINUX_RUNNER` (*Settings > Secrets and
+variables > Actions > Variables*) holds a runner label; delete the variable to go back. The job installs
+its own packages with `apt-get` and needs neither Docker nor `sudo` when it runs as root. Its logic is
+`tools/slicer_linux_runtime/ci/build_linux_runtime.sh`, which also runs outside Actions.
+
+---
+
 <div align="center">
 
 <picture>

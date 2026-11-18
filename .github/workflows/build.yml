@@ -1,0 +1,517 @@
+name: Build
+
+# Windows x64 (with the Bambu Linux bridge) and macOS arm64 builds of this fork.
+#
+#   linux-runtime -> windows-x64 \
+#                    macos-arm64  -> release (tags only, draft)
+#
+# Runs on demand and for version tags only: Windows and macOS minutes are expensive in a private
+# repository. The dependency builds are cached; a first run from the default branch fills the
+# caches every later run (tags included) restores.
+
+on:
+  workflow_dispatch:
+    inputs:
+      windows:
+        description: Build Windows x64 (Bambu Linux bridge)
+        type: boolean
+        default: true
+      macos:
+        description: Build macOS arm64 (unsigned)
+        type: boolean
+        default: true
+  push:
+    tags:
+      - 'v*'
+
+# Nothing by default; every job states what it needs.
+permissions: {}
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The two inputs of the Windows build that have to be made on Linux: the runtime host that
+  # runs inside the WSL2 distro, and the root filesystem of that distro. All of the logic is in
+  # the script, which runs the same way outside Actions.
+  linux-runtime:
+    name: Linux runtime (host + WSL rootfs)
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows }}
+    # GitHub-hosted unless the LINUX_RUNNER repository variable names a self-hosted runner label.
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          lfs: 'false'
+
+      - name: Build the runtime host and the WSL rootfs
+        run: bash tools/slicer_linux_runtime/ci/build_linux_runtime.sh --output-dir "$RUNNER_TEMP/linux-runtime"
+
+      - name: Upload the Linux runtime
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-runtime
+          path: ${{ runner.temp }}/linux-runtime
+          if-no-files-found: error
+          retention-days: 1
+          # A tar and a tar.gz; deflating them again only costs time.
+          compression-level: 1
+
+  windows-x64:
+    name: Windows x64
+    needs: linux-runtime
+    # Not upstream's windows-latest: that image carries Visual Studio 2026 and upstream builds on
+    # it with clang-cl. The bridge has only ever been compiled with Visual Studio 2022's cl, so
+    # this job uses the same compiler and generator as the tested local build.
+    runs-on: windows-2022
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          lfs: 'false'
+
+      - name: Name the build
+        id: meta
+        shell: pwsh
+        run: |
+          $content = Get-Content version.inc -Raw
+          if ($content -notmatch 'set\(SoftFever_VERSION "(.*?)"\)') { throw 'version.inc has no SoftFever_VERSION' }
+          $version = $Matches[1]
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $label = $env:GITHUB_REF_NAME -replace '[^A-Za-z0-9._-]', '-'
+          } else {
+            $label = "V$version-$($env:GITHUB_SHA.Substring(0, 7))"
+          }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "label=$label"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "zip=OrcaSlicer_BambuBridge_Windows_x64_${label}_portable.zip"
+
+      - name: Download the Linux runtime
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-runtime
+          path: ${{ runner.temp }}/linux-runtime
+
+      - name: Stage the Linux runtime
+        shell: pwsh
+        run: ./tools/slicer_linux_runtime/ci/stage_linux_runtime.ps1 -ArtifactDir (Join-Path $env:RUNNER_TEMP 'linux-runtime')
+
+      - name: Get CMake
+        uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9 # v4.3.4
+        with:
+          cmakeVersion: "~4.3.0"
+          useLocalCache: true
+          useCloudCache: true
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+
+      # Restore and save are separate steps, so a dependency build is kept even when the
+      # slicer build after it fails.
+      - name: Restore the dependencies
+        id: deps
+        uses: actions/cache/restore@v6
+        with:
+          path: deps/build/OrcaSlicer_dep
+          key: windows-2022-x64-msvc-orcaslicer_deps-${{ hashFiles('deps/**') }}
+
+      - name: Build the dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          # OpenSSL's Configure needs a native Windows perl. The hosted images ship Strawberry
+          # Perl; install it where they do not. Only perl\bin goes on PATH: Strawberry's c\bin
+          # carries GNU tools the build must not pick up, and the perl of Git for Windows is an
+          # MSYS one that breaks the OpenSSL build.
+          $strawberry = 'C:\Strawberry\perl\bin'
+          if (-not (Test-Path "$strawberry\perl.exe")) {
+            choco install strawberryperl -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Strawberry Perl could not be installed.' }
+          }
+          $env:PATH = "$strawberry;$env:PATH"
+          $perlOs = & perl -e 'print $^O'
+          if ($perlOs -ne 'MSWin32') { throw "The perl on PATH is '$perlOs', not a native Windows perl." }
+
+          .\build_win.bat -d --vs 2022
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # Only the install prefix is needed from here on (and cached); the build trees and the
+          # downloads are several GB the slicer build needs the room for. Best effort: a file a
+          # lingering compiler process still holds must not fail a finished dependency build.
+          Get-ChildItem deps\build -Force | Where-Object { $_.Name -ne 'OrcaSlicer_dep' } |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item deps\DL_CACHE -Recurse -Force -ErrorAction SilentlyContinue
+          exit 0
+
+      - name: Save the dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: deps/build/OrcaSlicer_dep
+          key: ${{ steps.deps.outputs.cache-primary-key }}
+
+      - name: Build and install OrcaSlicer
+        shell: pwsh
+        run: |
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free / 1GB, 1)}} -AutoSize
+          .\build_win.bat -s -i --vs 2022
+
+      # The install step only warns when the Linux runtime is missing. Such a build starts, but
+      # can never load the Bambu network plug-in, so it must not be published.
+      - name: Verify the Bambu Linux bridge is in the build
+        shell: pwsh
+        run: >
+          ./tools/slicer_linux_runtime/ci/verify_windows_package.ps1
+          -InstallDir build/OrcaSlicer
+          -RuntimeManifest (Join-Path $env:RUNNER_TEMP 'linux-runtime/runtime-files.sha256')
+          -RequireEmptyDataDir
+
+      - name: Pack the portable zip
+        shell: pwsh
+        working-directory: build
+        env:
+          ZIP_NAME: ${{ steps.meta.outputs.zip }}
+        run: |
+          $zip = Join-Path (Get-Location) $env:ZIP_NAME
+          # Windows' own tar (bsdtar) writes an ordinary deflate zip and keeps empty folders, so
+          # nothing has to be installed for this step.
+          $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+          & $tar -a -c -f $zip OrcaSlicer
+          if ($LASTEXITCODE -ne 0) { throw "tar failed with exit code $LASTEXITCODE." }
+
+          # The empty data_dir folder is what keeps this build's settings apart from a stock
+          # OrcaSlicer; the rootfs is the bridge's largest piece.
+          $entries = (& $tar -t -f $zip) | ForEach-Object { ($_ -replace '\\', '/').TrimEnd('/') }
+          if ($LASTEXITCODE -ne 0) { throw "The zip cannot be read back." }
+          foreach ($wanted in 'OrcaSlicer/data_dir', 'OrcaSlicer/orca-slicer.exe',
+                              'OrcaSlicer/linux_runtime/slicer_linux_runtime.dll',
+                              'OrcaSlicer/linux_runtime/slicer_linux_runtime_host_abi1',
+                              'OrcaSlicer/linux_runtime/windows-wsl2-rootfs.tar') {
+            if ($entries -notcontains $wanted) { throw "The zip lacks $wanted" }
+          }
+
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          # LF, so "sha256sum -c" in the release job reads it.
+          [System.IO.File]::WriteAllText("$zip.sha256", "$hash  $env:ZIP_NAME`n")
+          $sizeMb = [math]::Round((Get-Item -LiteralPath $zip).Length / 1MB)
+          @(
+            "### Windows x64"
+            ""
+            "``$env:ZIP_NAME`` ($sizeMb MB), SHA-256 ``$hash``"
+            ""
+            "Portable: unzip anywhere and run ``orca-slicer.exe``. Settings live in the ``data_dir`` folder next to it."
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload the portable zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64-portable
+          path: |
+            build/${{ steps.meta.outputs.zip }}
+            build/${{ steps.meta.outputs.zip }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  macos-arm64:
+    name: macOS arm64
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.macos }}
+    # The image upstream builds on; arm64 (Apple Silicon).
+    runs-on: macos-15
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      # Deleting the compiler cache entries a new one supersedes.
+      actions: write
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      # The compiler is part of an image that is rebuilt often, so its mtime means nothing.
+      CCACHE_COMPILERCHECK: content
+      CCACHE_LEG: macos-15-arm64
+    defaults:
+      run:
+        # Named explicitly, which also turns on pipefail.
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          lfs: 'false'
+
+      - name: Name the build
+        id: meta
+        run: |
+          version=$(grep 'set(SoftFever_VERSION' version.inc | cut -d '"' -f2)
+          [ -n "$version" ] || { echo "version.inc has no SoftFever_VERSION"; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            label=$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '-')
+          else
+            label="V${version}-${GITHUB_SHA:0:7}"
+          fi
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+          echo "dmg=OrcaSlicer_Mac_arm64_${label}_unsigned.dmg" >> "$GITHUB_OUTPUT"
+          [ "$(uname -m)" = "arm64" ] || { echo "this job needs an arm64 runner, got $(uname -m)"; exit 1; }
+
+      # CMake and Ninja, as upstream.
+      - name: Get CMake
+        uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9 # v4.3.4
+        with:
+          cmakeVersion: "~4.3.0"
+          useLocalCache: true
+          useCloudCache: true
+
+      # Restore and save are separate steps, so a dependency build is kept even when the
+      # slicer build after it fails.
+      - name: Restore the dependencies
+        id: deps
+        uses: actions/cache/restore@v6
+        with:
+          path: deps/build/arm64
+          key: macos-15-arm64-orcaslicer_deps-${{ hashFiles('deps/**') }}
+
+      - name: Build the dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: |
+          brew install automake texinfo libtool pkgconf yasm nasm
+          ./build_release_macos.sh -dx -j 3 -a arm64 -t 10.15
+          # Only the install prefix is needed from here on (and cached).
+          (cd deps/build/arm64 && find . -mindepth 1 -maxdepth 1 ! -name 'OrcaSlicer_dep' -exec rm -rf {} +)
+          rm -rf deps/DL_CACHE
+
+      - name: Save the dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: deps/build/arm64
+          key: ${{ steps.deps.outputs.cache-primary-key }}
+
+      - name: Install tools
+        run: |
+          brew install libtool
+          mkdir -p deps/build/arm64
+
+      - name: Free disk space
+        run: |
+          df -hI /
+          # Deleting the unused Xcodes takes minutes, so only do it when the build might not fit.
+          avail_gib=$(df -g / | awk 'NR == 2 { print $4 }')
+          if [ "$avail_gib" -ge 15 ]; then
+            echo "$avail_gib GiB free, enough for the build"
+            exit 0
+          fi
+          xcode=$(basename "$(cd "$(xcode-select -p)/../.." && pwd -P)")
+          sudo find /Applications -maxdepth 1 -type d -name "Xcode_*.app" ! -name "$xcode" -exec rm -rf {} +
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches/*
+          df -hI /
+
+      # Compiler cache for the slicer build: at ten times the price of a Linux minute, a warm
+      # rebuild is worth the bookkeeping. Every step of it may fail without failing the build;
+      # build_release_macos.sh uses ccache when it is on PATH and builds without it otherwise.
+      - name: Install the compiler cache
+        id: ccache
+        continue-on-error: true
+        run: |
+          brew install ccache
+          ccache --version | head -n 1
+          {
+            echo "CCACHE_ENTRY=ccache-$CCACHE_LEG-${{ github.run_id }}-${{ github.run_attempt }}"
+            # Read by build_release_macos.sh; the remaining ccache settings are its own.
+            echo "CMAKE_C_COMPILER_LAUNCHER=ccache"
+            echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore the compiler cache
+        id: ccache_restore
+        if: steps.ccache.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ${{ env.CCACHE_ENTRY }}
+          restore-keys: ccache-${{ env.CCACHE_LEG }}-
+
+      - name: Build OrcaSlicer
+        run: |
+          if command -v ccache >/dev/null 2>&1; then ccache -z || true; fi
+          ./build_release_macos.sh -s -n -x -j 3 -a arm64 -t 10.15
+
+      - name: Compiler cache statistics
+        if: ${{ always() && steps.ccache.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          ccache --evict-older-than 7d
+          ccache -s -v || ccache -s
+
+      # Entries are immutable, so each run saves a new one and then drops the older ones. Only
+      # branch runs save: an entry saved by a tag run can be restored by that tag alone.
+      - name: Save the compiler cache
+        id: ccache_save
+        if: ${{ always() && steps.ccache_restore.outcome == 'success' && github.ref_type == 'branch' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ${{ env.CCACHE_ENTRY }}
+
+      - name: Drop older compiler cache entries
+        if: ${{ always() && steps.ccache_save.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # The save step reports success even when its tar failed, so keep the older entries
+          # unless the new one is listed.
+          if ! gh cache list --ref "$GITHUB_REF" --key "$CCACHE_ENTRY" --json key \
+              | jq -e --arg entry "$CCACHE_ENTRY" 'any(.[]; .key == $entry)' > /dev/null; then
+            echo "$CCACHE_ENTRY was not saved; keeping the older entries."
+            exit 0
+          fi
+          gh cache list --ref "$GITHUB_REF" --key "ccache-$CCACHE_LEG-" --limit 100 --json id,key \
+            | jq -r --arg prefix "ccache-$CCACHE_LEG-" --argjson run "$GITHUB_RUN_ID" \
+                '.[] | select((.key | ltrimstr($prefix) | split("-")[0] | tonumber?) < $run) | .id' \
+            | while read -r id; do gh cache delete "$id"; done
+
+      # No Apple Developer certificate: no Developer ID signature and no notarization. Apple
+      # Silicon refuses to run code without any signature, so the bundle is signed ad hoc - every
+      # Mach-O file first, the bundle last, as upstream's release signing does (codesign --deep
+      # cannot sign the bundled Python runtime).
+      - name: Sign the app ad hoc
+        run: |
+          app="build/arm64/OrcaSlicer/OrcaSlicer.app"
+          [ -d "$app" ] || { echo "::error::$app was not built"; exit 1; }
+          archs=$(lipo -archs "$app/Contents/MacOS/OrcaSlicer")
+          [ "$archs" = "arm64" ] || { echo "::error::expected an arm64 executable, got: $archs"; exit 1; }
+
+          xattr -cr "$app"
+          machos=()
+          while IFS= read -r f; do machos+=("$f"); done < <(
+            find "$app" -type f -print0 |
+              xargs -0 file --no-pad --mime-type -- |
+              grep -v ' (for architecture ' |
+              grep ': application/x-mach-binary$' |
+              sed 's|: application/x-mach-binary$||'
+          )
+          if [ "${#machos[@]}" -eq 0 ]; then
+            echo "::error::no Mach-O files found in $app"
+            exit 1
+          fi
+          echo "signing ${#machos[@]} Mach-O files"
+          codesign --force --sign - --timestamp=none "${machos[@]}"
+          codesign --force --sign - --timestamp=none "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --display --verbose=2 "$app" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q '^Signature=adhoc$' "$RUNNER_TEMP/codesign.txt"
+
+      - name: Create the DMG
+        env:
+          DMG_NAME: ${{ steps.meta.outputs.dmg }}
+        run: |
+          # create_dmg calls `retry`; upstream's waits five minutes between attempts, which is
+          # a lot of macOS time for hdiutil's occasional "Resource busy".
+          retry() {
+            local attempt=1
+            until "$@"; do
+              [ "$attempt" -lt 3 ] || return 1
+              attempt=$((attempt + 1))
+              sleep 30
+            done
+          }
+          source scripts/create_dmg.sh
+
+          stage="$RUNNER_TEMP/OrcaSlicer_dmg"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          cp -R build/arm64/OrcaSlicer/OrcaSlicer.app "$stage/"
+          codesign --verify --deep --strict "$stage/OrcaSlicer.app"
+          ln -sfn /Applications "$stage/Applications"
+          create_dmg "OrcaSlicer" "$stage" "$DMG_NAME"
+
+          hash=$(shasum -a 256 "$DMG_NAME" | awk '{print $1}')
+          echo "$hash  $DMG_NAME" > "$DMG_NAME.sha256"
+          size_mb=$(( $(stat -f %z "$DMG_NAME") / 1048576 ))
+          {
+            echo "### macOS arm64 (Apple Silicon)"
+            echo
+            echo "\`$DMG_NAME\` ($size_mb MB), SHA-256 \`$hash\`"
+            echo
+            echo "**Not signed with an Apple Developer ID and not notarized** (ad-hoc signature only)."
+            echo "macOS quarantines it after a download and reports the app as damaged. After copying"
+            echo "OrcaSlicer to Applications, clear the quarantine once:"
+            echo
+            echo '```'
+            echo 'xattr -cr /Applications/OrcaSlicer.app'
+            echo '```'
+            echo
+            echo "This build has no Bambu Linux bridge; it loads Bambu's macOS network plug-in like stock OrcaSlicer."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the DMG
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-arm64-dmg
+          path: |
+            ${{ steps.meta.outputs.dmg }}
+            ${{ steps.meta.outputs.dmg }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  release:
+    name: Draft release
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    needs: [windows-x64, macos-arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download the Windows build
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-x64-portable
+          path: dist
+
+      - name: Download the macOS build
+        uses: actions/download-artifact@v8
+        with:
+          name: macos-arm64-dmg
+          path: dist
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          ls -l
+          sha256sum -c -- *.sha256
+          cat -- *.sha256 > SHA256SUMS.txt
+          rm -- *.sha256
+          {
+            echo "OrcaSlicer with the Bambu Linux bridge for Windows, built from \`$TAG\` (\`$GITHUB_SHA\`)."
+            echo
+            echo "- **Windows x64**: portable zip. Unzip anywhere and run \`orca-slicer.exe\`; needs WSL2."
+            echo "- **macOS arm64**: not signed with an Apple Developer ID and not notarized. After copying"
+            echo "  OrcaSlicer to Applications, run \`xattr -cr /Applications/OrcaSlicer.app\` once."
+          } > "$RUNNER_TEMP/notes.md"
+          # A re-run of the same tag updates the release it already made.
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" ./* --clobber
+          else
+            gh release create "$TAG" ./* --draft --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
