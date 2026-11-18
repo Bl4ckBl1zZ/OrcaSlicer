@@ -3,7 +3,7 @@
 
     python mcpctl.py start [--name dev] [--port 0] [files...]   launch an instance and leave it running
     python mcpctl.py tools                                      list the tools it offers
-    python mcpctl.py call <tool> ['<json arguments>'] [--era legacy] [--images DIR]
+    python mcpctl.py [--era legacy] call <tool> ['<json>' | @file.json | -] [--images DIR] [--progress]
     python mcpctl.py stop                                       end the instance started by `start`
 
 The instance uses its own data directory under $ORCA_MCP_RUN_DIR (default: ./run next to this
@@ -81,7 +81,12 @@ def cmd_tools(args) -> None:
 
 
 def cmd_call(args) -> None:
-    arguments = json.loads(args.arguments) if args.arguments else {}
+    text = args.arguments or "{}"
+    if text == "-":
+        text = sys.stdin.read()
+    elif text.startswith("@"):
+        text = Path(text[1:]).read_text(encoding="utf-8")
+    arguments = json.loads(text)
     result = client_for(args).call(args.tool, arguments, progress=args.progress)
     for params in result.progress:
         print("progress:", json.dumps(params), file=sys.stderr)
