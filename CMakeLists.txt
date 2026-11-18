@@ -1255,6 +1255,10 @@ elseif (MSVC AND NOT IS_CLANG_CL)
 endif ()
 
 add_subdirectory(src)
+option(ORCA_MCP_BRIDGE "Build orca-mcp-bridge, the stdio bridge to the MCP server (Claude Desktop)" ON)
+if (ORCA_MCP_BRIDGE)
+    add_subdirectory(src/mcp_bridge)
+endif ()
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT OrcaSlicer_app_gui)
 
 add_dependencies(gettext_make_pot hintsToPot)
