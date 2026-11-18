@@ -209,6 +209,9 @@
 #include "../Utils/UndoRedo.hpp"
 #include "slic3r/Config/Snapshot.hpp"
 #include "Preferences.hpp"
+#ifdef SLIC3R_MCP
+#include "slic3r/Mcp/McpService.hpp"
+#endif
 #include "Tab.hpp"
 #include "UpdateDialogs.hpp"
 #include "Mouse3DController.hpp"
@@ -1303,6 +1306,10 @@ void GUI_App::shutdown()
 
     if (m_is_recreating_gui) return;
     stop_http_server();
+#ifdef SLIC3R_MCP
+    // MCP server: close the listener and drop queued calls before any window is destroyed.
+    Mcp::Service::instance().stop();
+#endif
     set_closing(true);
     Slic3r::PluginManager::instance().set_shutting_down();
 
@@ -3932,6 +3939,10 @@ bool GUI_App::on_init_inner()
             this->mainframe->register_win32_callbacks();
 #endif
             this->post_init();
+#ifdef SLIC3R_MCP
+            // MCP server: start once the window and the event loop are up (off unless enabled).
+            Mcp::Service::instance().on_app_ready();
+#endif
 
             update_publish_status();
         }

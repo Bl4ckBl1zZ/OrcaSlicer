@@ -859,6 +859,14 @@ set(SLIC3R_GUI_SOURCES
     Utils/wxInspectorPlugins/Registration.hpp
 )
 
+# MCP server: lets a local AI agent drive the open project (src/slic3r/Mcp, docs/mcp).
+# The sources are listed in Mcp/McpSources.cmake.
+option(SLIC3R_MCP "Build the built-in MCP server" ON)
+if (SLIC3R_MCP)
+    include(Mcp/McpSources.cmake)
+    list(APPEND SLIC3R_GUI_SOURCES ${SLIC3R_MCP_SOURCES})
+endif ()
+
 # Design/CAD tab: parametric sketch UI, its gizmos, and the MCP control socket.
 # All of it sits behind SLIC3R_CAD and links the CAD kernel in libslic3r.
 if (SLIC3R_CAD)
@@ -941,6 +949,9 @@ else ()
     add_library(libslic3r_gui STATIC ${SLIC3R_GUI_SOURCES})
 endif ()
 target_include_directories(libslic3r_gui PRIVATE Utils ${CMAKE_CURRENT_BINARY_DIR})
+if (SLIC3R_MCP)
+    target_compile_definitions(libslic3r_gui PRIVATE SLIC3R_MCP)
+endif ()
 
 # Orca: Bambu network plug-in through the Linux runtime (WSL2) on Windows.
 add_subdirectory(Utils/SlicerLinuxRuntime)

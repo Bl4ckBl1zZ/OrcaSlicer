@@ -48,6 +48,9 @@
 #include "slic3r/GUI/ReleaseNote.hpp"
 #include <wx/language.h>
 #include "OG_CustomCtrl.hpp"
+#ifdef SLIC3R_MCP
+#include "slic3r/Mcp/McpPreferences.hpp"
+#endif
 #include "libslic3r_version.h"
 #include "wx/graphics.h"
 #include <wx/listimpl.cpp>
@@ -1865,6 +1868,11 @@ void PreferencesDialog::create_items()
         [](int value) { wxGetApp().mainframe->plugin_pages().set_visible_page_count(value); }
     );
     g_sizer->Add(item_plugin_pages_visible_count);
+
+#ifdef SLIC3R_MCP
+    //// GENERAL > MCP server
+    Mcp::add_preferences_section(*this, m_parent, g_sizer);
+#endif
 
     g_sizer->AddSpacer(FromDIP(10));
     sizer_page->Add(g_sizer, 0, wxEXPAND);
