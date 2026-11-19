@@ -6,7 +6,10 @@ open project and change it through tools. The agent works in the window the user
 changes appear live, and every change is one step in the undo history.
 
 The server is **off by default**, listens on this computer only, and requires an access token.
-It has no tool that reaches a printer, the cloud account or the network plug-in.
+Printers are reached only through the four [printer tools](tools-printers.md), only after the
+user switched them on in Preferences, and every print job sent and every print stopped needs the
+user's click in a confirmation window. There is no tool for cloud login, the account or the
+network plug-in.
 
 - [Tool reference](#tools)
 - [Adding tools](adding-tools.md) (for developers)
@@ -22,12 +25,15 @@ Preferences > General > **MCP server (AI agent control)**:
 | Port | TCP port on `127.0.0.1`, default `13720`. If the port is taken the server does not start and the status line says so; it never picks another port, because client configurations hold the address. |
 | Status | `Listening on http://127.0.0.1:13720/mcp`, `Stopped`, or the reason it is not running. |
 | Allow the agent to edit G-code settings | Off by default. G-code text settings can be read but not changed unless this is on (`mcp_allow_gcode_edit`). |
+| Allow AI agents to read printer status | Off by default. Lets `printer_list` and `printer_status` list the printers and read their state, job, temperatures and filament trays (`mcp_printer_read`). See [tools-printers.md](tools-printers.md). |
+| Allow AI agents to send print jobs | Off by default. Lets `print_send` and `printer_control` ask to send a sliced plate, and pause, resume or stop a print (`mcp_printer_send`). Every send and every stop still needs the user's click in a confirmation window. |
 | Connect Claude Code > Copy command | Copies the `claude mcp add ...` command, including the token. |
 | Client configuration > Copy JSON | Copies a `.mcp.json` entry, including the token. |
 | Access token > Copy token | Copies the token alone. |
 | New access token > Regenerate | Replaces the token; clients need the new one. |
 
-The settings are stored in the application configuration as `mcp_enabled` and `mcp_port`. The
+The settings are stored in the application configuration as `mcp_enabled`, `mcp_port`,
+`mcp_allow_gcode_edit`, `mcp_printer_read` and `mcp_printer_send`; no tool can change them. The
 token is stored in `<data folder>/mcp/token`. While the server runs,
 `<data folder>/mcp/endpoint.json` holds
 `{"schema": 1, "url", "port", "token", "pid", "protocolVersions", "app", "appVersion"}` for local
@@ -97,7 +103,10 @@ are used only for malformed requests, unknown methods and tools, and bad protoco
 | Printer secrets | `printhost_apikey`, `printhost_password`, `printhost_user`, `printhost_port`, `printhost_cafile`, `print_host`, `print_host_webui` and `flashforge_serial_number` are never returned: every read gives `"<redacted>"` when set (`""` when empty), including `preset_diff`, the unsaved edits listed by `unsaved_changes` / `discarded`, and the old and new values `settings_set` reports. They, `host_type` and the other printer-host keys cannot be written (`forbidden_key`). |
 | Projects | `project_open` never brings custom G-code without the user's G-code permission (`untrusted_gcode`, see [tools-project.md](tools-project.md#project_open)): the G-code in effect after the load and plate custom G-code are compared with the user's own presets, so neither the file's own list of changed settings nor a "published" project gets around it. Post-processing scripts, slicing plug-ins and printer connection settings (`post_process`, `slicing_pipeline_plugin`, `printer_agent`, `host_type`, ...) a project would bring are always put back to the user's values, also in the presets the file brought. `model_import` of a 3MF drops all of these from the imported objects' settings. |
 | Scripts | `slice` and `export_file` (G-code) are refused (`untrusted_scripts`) while the process preset runs post-processing scripts or slicing plug-ins the user has not saved in their own preset (an unsaved edit, or a preset that came with a project file). |
-| Never exposed | Printer communication, cloud login, the network plug-in, the plug-in system, preferences other than this section. |
+| Printer access | `printer_list` / `printer_status` and `print_send` / `printer_control` work only while the user's Preferences switches `mcp_printer_read` / `mcp_printer_send` are on (both off by default; otherwise `printer_access_disabled`). No tool can change the switches or any other `mcp_*` setting. Printer tool calls, refusals, the user's answers and transfer results are written to the journal `history` lists ([journal entries](tools-printers.md#journal-entries)). |
+| Print confirmation | Every `print_send` and every `printer_control` stop waits for the user's click in a confirmation window (plate picture, printer, filament-to-tray mapping, time, weight, options); Send is disabled for the first second, Cancel is the default, Escape or closing declines, no answer in 5 minutes declines. The window is modeless and out of the server's reach: no tool can see, click or close it. One window at a time, at most three requests waiting (`rate_limited`). |
+| Printer data | Printer tools return names, models, states, job progress, temperatures and trays; never access codes, serial numbers, IP addresses or host names, API keys, passwords or cloud account data. Printers are named by opaque salted ids (`prn_...`, `host_...`). |
+| Never exposed | Cloud login and the account, the network plug-in, the plug-in system, preferences other than this section. |
 
 The model is: other users of the computer and web pages in the user's browser must not be able to
 use the server. Software already running as the user can read the token file and is out of scope.
@@ -166,7 +175,9 @@ Calls run on the application's main thread, one at a time, between the user's ow
   longer than the tool's queue time (30 s) the call fails with `ui_busy`. Reading tools still run
   while a dialog is open.
 - Dialogs the application raises during a call are answered by the tool's policy and returned to
-  the agent as `dialogs`; nothing is left on screen waiting for a click.
+  the agent as `dialogs`; nothing is left on screen waiting for a click. The one exception is the
+  print confirmation window of `print_send` and `printer_control` stop, which only the user answers
+  ([tools-printers.md](tools-printers.md#the-confirmation-window)).
 - Each changing call is one undo step named `MCP: ...`. The user can undo it like their own, and
   the `history` tool can too. Changes outside the undo stack (presets, filaments) are kept in a
   journal that `history` lists and reverts.
@@ -203,7 +214,7 @@ Calls run on the application's main thread, one at a time, between the user's ow
 
 ## Tools
 
-48 tools, one reference page per tool group:
+52 tools, one reference page per tool group:
 
 | Group | Tools | Page |
 |---|---|---|
@@ -222,6 +233,7 @@ Calls run on the application's main thread, one at a time, between the user's ow
 | Slice | `plate_validate`, `slice`, `slice_status`, `slice_cancel`, `slice_result` | [tools-slice.md](tools-slice.md) |
 | Analysis | `slice_layers`, `analyze` | [tools-analysis.md](tools-analysis.md) |
 | View | `screenshot` (views `editor`, `preview`; overlays) | [tools-view.md](tools-view.md) |
+| Printers | `printer_list`, `printer_status`, `print_send`, `printer_control` (off until the user allows them in Preferences) | [tools-printers.md](tools-printers.md) |
 
 There is one tool per verb across groups: everything is deleted with `delete` (objects, instances,
 parts, modifiers and other bodies) and every file other than the project is written with

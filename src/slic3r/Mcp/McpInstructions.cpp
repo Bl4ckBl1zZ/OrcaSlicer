@@ -29,18 +29,21 @@ const char* server_instructions()
            "(3) paint (paint_apply) only when the region must follow the surface. Supports: enable_support plus support_type normal(manual) or "
            "tree(manual) to print only enforced areas; enforce/block with paint or support_enforcer / support_blocker bodies. Colour: filament "
            "on a part (object_update), a modifier with a filament, plate_layer_events for a change at a height, or paint_apply channel=color "
-           "(filament_edit adds slots). delete removes objects, instances and any body.\n"
+           "(filament_edit adds slots).\n"
            "\n"
            "Long operations (slice, arrange, orient, repair) wait up to wait_s, then return status \"running\" with a job: poll job_status "
            "(or slice_status). Any edit invalidates the slice; slice again before reading results or exporting.\n"
            "\n"
-           "Errors are results with isError and {error: {code, message, hint}}: read the hint, fix the call, retry. ui_busy means the user is "
-           "in the middle of something: wait and retry.\n"
+           "Errors are results with isError and {error: {code, message, hint}}: read the hint, fix the call, retry. ui_busy: the user is "
+           "busy in the window; wait, retry.\n"
            "\n"
-           "Undo: every change is one undo step named \"MCP: ...\" (history). Preset, filament-slot and layer-event changes are outside the undo "
-           "stack; history lists them in the journal and can revert most of them.\n"
+           "Undo: every change is one undo step named \"MCP: ...\" (history); preset, filament-slot and layer-event changes are in its "
+           "journal and can mostly be reverted.\n"
            "\n"
-           "Files: only inside the folders app_status lists. Nothing is ever sent to a printer or the cloud.";
+           "Files: only inside the folders app_status lists.\n"
+           "\n"
+           "Printers (only if the user allowed it in Preferences): printer_list, printer_status; print_send asks the user in a "
+           "confirmation window (a job). A declined or timed-out send is the user's answer: do not retry it.";
 }
 
 }}} // namespace Slic3r::GUI::Mcp

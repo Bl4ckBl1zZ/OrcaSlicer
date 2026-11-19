@@ -102,6 +102,15 @@ void add_preferences_section(PreferencesDialog& dialog, wxWindow* parent, wxSize
                                            _L("Start, end, layer-change and other G-code text in the printer, filament and process settings can be "
                                               "read by the agent but not changed, unless this is switched on. G-code can damage a printer."),
                                            "mcp_allow_gcode_edit"));
+    // Printers (DESIGN.md D13). Off by default; only this dialog writes them, no MCP tool can.
+    sizer->Add(dialog.create_item_checkbox(_L("Allow AI agents to read printer status"),
+                                           _L("Lets the agent list your printers and read their state, job progress, temperatures and "
+                                              "filament trays. Access codes, serial numbers and addresses are never shown to it."),
+                                           "mcp_printer_read"));
+    sizer->Add(dialog.create_item_checkbox(_L("Allow AI agents to send print jobs"),
+                                           _L("Lets the agent ask to send a sliced plate to a printer, and to pause, resume or stop a "
+                                              "print. Every job and every stop needs your click in a confirmation window first."),
+                                           "mcp_printer_send"));
 
     // Connecting a client.
     sizer->Add(dialog.create_item_button(_L("Connect Claude Code"), _L("Copy command"),

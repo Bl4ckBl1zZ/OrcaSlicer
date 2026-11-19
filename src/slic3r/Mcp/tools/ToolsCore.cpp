@@ -21,6 +21,10 @@
 #include "../McpSchema.hpp"
 #include "../McpService.hpp"
 #include "../McpTool.hpp"
+#include "printers/Printers.hpp"
+#ifdef SLIC3R_MCP_TEST_PRINTERS
+#include "../testing/FakePrinters.hpp"
+#endif
 
 namespace Slic3r { namespace GUI { namespace Mcp {
 
@@ -93,6 +97,16 @@ json app_status(ToolContext&)
     conventions["ids"] = "o<N> object, i<N> instance, v<N> volume, pl<N> plate; plates also by 1-based number; filament slots are 1-based";
     conventions["camera"] = "azimuth 0 looks from the front (-Y towards +Y), counter-clockwise seen from above; elevation 90 looks straight down";
     out["conventions"] = std::move(conventions);
+
+    // Printer access as the user set it in Preferences (no tool can change it).
+    json printers = json::object({{"read_allowed", Printers::read_allowed()}, {"send_allowed", Printers::send_allowed()},
+                                  {"sends_in_flight", Printers::sends_in_flight()}});
+#ifdef SLIC3R_MCP_TEST_PRINTERS
+    // MCP: test builds only; never set in a release build.
+    if (Testing::fake_printers_active())
+        printers["fake_printers"] = true;
+#endif
+    out["printers"] = std::move(printers);
 
     json server = json::object();
     server["tools"] = service.registry() != nullptr ? service.registry()->tools().size() : 0;

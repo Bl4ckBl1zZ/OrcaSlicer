@@ -20,11 +20,14 @@ No arguments. Result:
  "undo": "MCP: update o52", "redo": null,
  "read_roots": ["C:/Users/me/Documents", "..."], "write_roots": [".../mcp/workspace"],
  "conventions": {"units": "...", "axes": "...", "positions": "...", "volumes": "...", "ids": "...", "camera": "..."},
+ "printers": {"read_allowed": false, "send_allowed": false, "sends_in_flight": 0},
  "server": {"tools": 6, "debug_tools": false}}
 ```
 
 `busy.modal_dialog` is the title of a dialog the user has open; `busy.blocks_changes` is the
-reason a changing call would have to wait right now, or `null`.
+reason a changing call would have to wait right now, or `null`. `printers` shows the user's
+printer switches (no tool can change them) and the print requests waiting for the user or being
+transferred; see [tools-printers.md](tools-printers.md).
 
 ## history
 

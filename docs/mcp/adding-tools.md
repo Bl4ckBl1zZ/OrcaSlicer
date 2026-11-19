@@ -219,7 +219,13 @@ disk. They return the canonical path or fail with `path_denied`, `not_found` or 
 ## Things the server never does
 
 No tool may reach the network agent, cloud login, device manager or the Bambu bridge; send or
-upload a print; install, enable or run plugins; or change preferences other than the MCP section.
+upload a print; install, enable or run plugins; or change preferences (`ScopedAppConfig`, which
+sets application settings for the length of one call and puts them back, refuses every `mcp_*`
+key, so the MCP section's switches stay the user's). The one exception to the first two is the
+printer group (`tools/printers/`, [tools-printers.md](tools-printers.md)): it uses the device
+manager and the application's own print job and print host upload, only while the user's
+Preferences switches `mcp_printer_read` / `mcp_printer_send` are on, and every send and stop waits
+for the user's click in its confirmation window.
 Settings that run code or hold the printer's address or credentials (`post_process`, `print_host`,
 `print_host_webui`, `printhost_*`, `host_type`, `flashforge_serial_number`, plugin-backed options)
 are read-only (`Settings::write_refusal`), with secrets redacted (`Settings::value_json_for`, which
