@@ -215,8 +215,21 @@ json set_project_scope(ToolContext& ctx, const json& values, const std::vector<s
 
     json changed = json::array(), journal_before = json::object(), journal_after = json::object();
     std::vector<std::pair<std::string, std::string>> undo;
+    bool any_changed = false;
     for (const Parsed& item : parsed) {
         json entry = {{"key", item.key}, {"old", value_json(before, item.key)}, {"new", value_json(project, item.key)}};
+        // Compared at full precision: the JSON values are rounded, the application is not.
+        any_changed = any_changed || !before.has(item.key) || before.opt_serialize(item.key) != project.opt_serialize(item.key);
+        // The window may adjust a value while it applies it (the 3D scene keeps the prime tower on the plate).
+        const json requested = value_json(changed_config, item.key);
+        if (requested != entry["new"]) {
+            entry["requested"] = requested;
+            std::string why = "the application adjusted it";
+            if (item.key == "wipe_tower_x" || item.key == "wipe_tower_y")
+                why = "the prime tower (wipe_tower_x/y is its front-left corner) and its brim must stay on the plate with a "
+                      "margin; a position far off the plate is moved to free space. scene_get plates[].prime_tower has the footprint";
+            ctx.note(item.key + " was stored as " + entry["new"].dump() + " instead of " + requested.dump() + ": " + why + ".");
+        }
         journal_before[item.key] = entry["old"];
         journal_after[item.key] = entry["new"];
         if (before.has(item.key))
@@ -233,7 +246,10 @@ json set_project_scope(ToolContext& ctx, const json& values, const std::vector<s
         wxGetApp().preset_bundle->export_selections(*wxGetApp().app_config);
         wxGetApp().plater()->on_config_change(config);
     });
-    ctx.set_slice_invalidated();
+    // The Print sees the change when the window's background-process timer fires; the slice tools
+    // apply it first (Slice::apply_pending_changes), so this is what the next slice finds.
+    if (any_changed)
+        ctx.set_slice_invalidated();
     json out = json::object();
     out["ok"] = true;
     out["scope"] = "project";
@@ -507,7 +523,9 @@ MCP_TOOL_GROUP(SettingsEdit)
         "(preset scopes) or remove the override (other scopes). Errors: unknown_key (nearest keys), key_not_in_scope (lists the scopes that "
         "take the key), invalid_value (lists accepted values), out_of_range (min/max), forbidden_key (post-processing, print host, plugin, and "
         "G-code text unless the user allowed it). settings_search finds keys. Object/part/range/plate changes are one undo step; preset and "
-        "project changes go to the journal (history revert). Returns changed [{key, old, new}] and side_effects.";
+        "project changes go to the journal (history revert). Returns changed [{key, old, new}] and side_effects; when the application "
+        "stores a different value than asked (e.g. wipe_tower_x/y, the prime tower's front-left corner, is kept on the plate with "
+        "its brim and a margin), the entry also has `requested` and a note explains it.";
     tool.input_schema = Schema::parse(R"JSON({
         "type": "object",
         "properties": {

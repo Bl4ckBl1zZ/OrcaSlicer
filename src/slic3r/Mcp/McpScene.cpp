@@ -12,8 +12,11 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "slic3r/GUI/3DScene.hpp"
+#include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Plater.hpp"
@@ -363,6 +366,37 @@ json object_json(int obj_idx, Detail detail, int plate_idx)
     return out;
 }
 
+json prime_tower_json(int plate_idx)
+{
+    GLCanvas3D* canvas = plater().get_view3D_canvas3D();
+    PartPlate*  plate = plater().get_partplate_list().get_plate(plate_idx);
+    if (canvas == nullptr || plate == nullptr)
+        return nullptr;
+    // The 3D view loads one tower volume per plate that prints a tower, as object 1000 + plate.
+    for (const GLVolume* volume : canvas->get_volumes().volumes) {
+        if (volume == nullptr || !volume->is_wipe_tower || volume->object_idx() != 1000 + plate_idx)
+            continue;
+        const Vec3d origin = plate->get_origin();
+        BoundingBoxf3 box = volume->transformed_convex_hull_bounding_box();
+        box.translate(-origin);
+        const DynamicPrintConfig& project = wxGetApp().preset_bundle->project_config;
+        const auto* x = project.option<ConfigOptionFloats>("wipe_tower_x");
+        const auto* y = project.option<ConfigOptionFloats>("wipe_tower_y");
+        const Print* print = plate->fff_print();
+        json out = json::object();
+        if (x != nullptr && y != nullptr)
+            out["position"] = json::array({round4(x->get_at(static_cast<size_t>(plate_idx))), round4(y->get_at(static_cast<size_t>(plate_idx)))});
+        out["box"] = json::object({{"min", json::array({round4(box.min.x()), round4(box.min.y())})},
+                                   {"max", json::array({round4(box.max.x()), round4(box.max.y())})}});
+        out["size"] = json::array({round4(box.size().x()), round4(box.size().y())});
+        out["height"] = round4(box.max.z());
+        // The same test the 3D view uses to draw the real tower instead of the estimate.
+        out["source"] = print != nullptr && print->is_step_done(psWipeTower) && print->wipe_tower_data().wipe_tower_mesh_data ? "sliced" : "estimate";
+        return out;
+    }
+    return nullptr;
+}
+
 json plate_json(int plate_idx)
 {
     PartPlateList& plates = plater().get_partplate_list();
@@ -375,6 +409,7 @@ json plate_json(int plate_idx)
     out["locked"] = plate->is_locked();
     out["sliced"] = plate->is_slice_result_valid();
     out["overrides"] = plate->config() != nullptr ? config_overrides_json(*plate->config()) : json(json::object());
+    out["prime_tower"] = prime_tower_json(plate_idx);
     return out;
 }
 

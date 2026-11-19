@@ -223,6 +223,36 @@ def test_duplicate_as_instances_and_objects(ec):
     assert len(one["created"]) == 1
 
 
+def test_duplicate_stays_on_source_plate(ec):
+    cube = add_cube(ec)
+    dup = ec.tool("object_duplicate", targets=[cube["id"]], copies=3)
+    assert [(p["plate"], p["outside_plate"]) for p in dup["placed"]] == [(1, False)] * 3, dup["placed"]
+    assert {p["id"] for p in dup["placed"]} == set(dup["created"])
+    assert not dup.get("notes"), dup.get("notes")
+    boxes = [i["bbox"] for i in dup["changed"][0]["instances"]]
+    assert not any(overlaps(boxes[i], boxes[j]) for i in range(4) for j in range(i + 1, 4))
+
+
+def test_duplicate_overflow_is_parked_and_reported(ec):
+    ec.tool("plate_manage", action="add")  # a second plate: copies must not land on it
+    big = add_cube(ec, size=(60, 60, 10))
+    copies = 30  # more than fit beside a centred 60 mm cube (a 3x3 grid on a 235 mm bed)
+    dup = ec.tool("object_duplicate", targets=[big["id"]], copies=copies, **{"as": "objects"})
+    placed = dup["placed"]
+    assert len(placed) == copies
+    on_plate = [p for p in placed if p["plate"] == 1]
+    parked = [p for p in placed if p["plate"] is None]
+    assert len(on_plate) + len(parked) == copies, placed  # never on plate 2
+    assert on_plate and parked, placed
+    assert all(p["outside_plate"] is False for p in on_plate) and all(p["outside_plate"] is True for p in parked)
+    assert any("outside every plate" in n and "include_off_plate" in n for n in dup["notes"]), dup["notes"]
+    assert len(scene(ec)["plates"][1]["objects"]) == 0
+    # Nothing overlaps: the source, the copies on plate 1 and the parked ones.
+    boxes = [instance_of(o)["bbox"] for o in [big] + dup["created"]]
+    n = len(boxes)
+    assert not any(overlaps(boxes[i], boxes[j]) for i in range(n) for j in range(i + 1, n))
+
+
 def test_duplicate_errors(ec):
     cube = add_cube(ec)
     assert ec.tool_error("object_duplicate", targets=[cube["volumes"][0]["id"]]).code == "invalid_argument"
@@ -342,6 +372,32 @@ def test_arrange_plate(ec):
     names = ec.tool("history")["undo"]
     assert names[0].startswith("MCP: arrange plate 1")
     undo(ec)
+    assert normalized(scene(ec)) == before
+
+
+def test_arrange_plate_reports_and_includes_off_plate(ec):
+    on = add_cube(ec)
+    off = add_cube(ec)
+    ec.tool("object_transform", targets=[off["id"]], translate=[-400, 0, 0])
+    off_inst = instance_of(get_object(ec, off["id"]))
+    assert off_inst["plate"] is None, off_inst
+    plain = ec.tool("object_arrange", wait_s=60)
+    assert any("not part of this arrange" in n for n in plain.get("notes", [])), plain
+    res = wait_job(ec, plain)["result"]
+    assert [x["instance"] for x in res["left_out"]] == [off_inst["id"]], res
+    assert [x["instance"] for x in res["outside_plates"]] == [off_inst["id"]], res
+    assert all(p["instance"] != off_inst["id"] for p in res["placements"])
+    assert get_object(ec, off["id"])["instances"][0]["plate"] is None
+    before = normalized(scene(ec))
+    brought = ec.tool("object_arrange", include_off_plate=True, wait_s=60)
+    assert any("brought onto plate 1" in n for n in brought.get("notes", [])), brought
+    res = wait_job(ec, brought)["result"]
+    assert "left_out" not in res and res["outside_plates"] == [], res
+    assert {p["instance"] for p in res["placements"]} == {instance_of(on)["id"], off_inst["id"]}
+    assert all(p["plate"] == 1 and p["outside_plate"] is False for p in res["placements"]), res["placements"]
+    boxes = [instance_of(get_object(ec, o["id"]))["bbox"] for o in (on, off)]
+    assert not overlaps(boxes[0], boxes[1])
+    undo(ec)  # one step: the move onto the plate and the arrange
     assert normalized(scene(ec)) == before
 
 

@@ -8,8 +8,10 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <boost/filesystem.hpp>
@@ -648,6 +650,133 @@ json object_transform(ToolContext& ctx)
 // object_duplicate
 // ---------------------------------------------------------------------------------------------
 
+// Where object_duplicate puts a copy (returns the offset from the source). A source on a plate: the
+// free cell nearest to it on a grid laid out from the source over that plate (cells `spacing` apart),
+// clear by `spacing` of the plate's instances, the copies placed before and the prime tower the 3D
+// view shows. When that plate has no such cell, or the source is on no plate: a row behind the plates
+// (world y beyond the first row of plates, where there is no plate), clear of whatever already waits
+// there, so a copy never lands on another plate.
+class CopyPlacer
+{
+public:
+    explicit CopyPlacer(double spacing) : m_spacing(spacing) {}
+
+    Vec3d place(const BoundingBoxf3& source, int plate_idx)
+    {
+        const BoundingBoxf box(Vec2d(source.min.x(), source.min.y()), Vec2d(source.max.x(), source.max.y()));
+        std::optional<Vec2d> at;
+        if (plate_idx >= 0 && plate_idx < plates().get_plate_count())
+            at = on_plate(box, plate_idx);
+        if (!at)
+            at = parked(box, plate_idx);
+        return Vec3d(at->x() - box.min.x(), at->y() - box.min.y(), 0.);
+    }
+
+private:
+    double                                   m_spacing;
+    std::vector<BoundingBoxf>                m_placed; // world frame, every copy so far
+    std::map<int, std::vector<BoundingBoxf>> m_plate_obstacles;
+    std::optional<std::vector<BoundingBoxf>> m_all_instances;
+
+    bool clear_of(const BoundingBoxf& cell, const std::vector<BoundingBoxf>& boxes) const
+    {
+        const double gap = m_spacing - 1e-6;
+        for (const BoundingBoxf& b : boxes)
+            if (cell.min.x() < b.max.x() + gap && b.min.x() - gap < cell.max.x() && cell.min.y() < b.max.y() + gap &&
+                b.min.y() - gap < cell.max.y())
+                return false;
+        return true;
+    }
+
+    // XY boxes (world frame) of every instance; with plate_idx >= 0 only those on that plate, plus its prime tower.
+    static std::vector<BoundingBoxf> instance_boxes(int plate_idx)
+    {
+        std::vector<BoundingBoxf> out;
+        const Model&              m = model();
+        for (int o = 0; o < static_cast<int>(m.objects.size()); ++o)
+            for (int i = 0; i < static_cast<int>(m.objects[static_cast<size_t>(o)]->instances.size()); ++i) {
+                if (plate_idx >= 0 && Ids::plate_of_instance(o, i) != plate_idx)
+                    continue;
+                const BoundingBoxf3 b = m.objects[static_cast<size_t>(o)]->instance_bounding_box(static_cast<size_t>(i));
+                out.emplace_back(Vec2d(b.min.x(), b.min.y()), Vec2d(b.max.x(), b.max.y()));
+            }
+        if (plate_idx >= 0)
+            if (const json tower = Scene::prime_tower_json(plate_idx); tower.is_object()) {
+                const Vec3d origin = plate_origin(plate_idx);
+                const json& b = tower["box"];
+                out.emplace_back(Vec2d(b["min"][0].get<double>() + origin.x(), b["min"][1].get<double>() + origin.y()),
+                                 Vec2d(b["max"][0].get<double>() + origin.x(), b["max"][1].get<double>() + origin.y()));
+            }
+        return out;
+    }
+
+    std::optional<Vec2d> on_plate(const BoundingBoxf& box, int plate_idx)
+    {
+        auto [it, inserted] = m_plate_obstacles.try_emplace(plate_idx);
+        if (inserted)
+            it->second = instance_boxes(plate_idx);
+        // The plate's printable area, world frame.
+        BoundingBoxf3 bed = plates().get_plate(plate_idx)->get_build_volume();
+        if (!bed.defined) {
+            const Vec3d origin = plate_origin(plate_idx);
+            bed = BoundingBoxf3(origin, origin + plate_size());
+        }
+        const Vec2d  size = box.size();
+        const double step_x = size.x() + m_spacing, step_y = size.y() + m_spacing;
+        const double eps = 1e-6;
+        const int    i_lo = static_cast<int>(std::ceil((bed.min.x() - box.min.x()) / step_x - eps));
+        const int    i_hi = static_cast<int>(std::floor((bed.max.x() - size.x() - box.min.x()) / step_x + eps));
+        const int    j_lo = static_cast<int>(std::ceil((bed.min.y() - box.min.y()) / step_y - eps));
+        const int    j_hi = static_cast<int>(std::floor((bed.max.y() - size.y() - box.min.y()) / step_y + eps));
+        struct Cell { double dist; int j, i; };
+        std::vector<Cell> cells;
+        for (int j = j_lo; j <= j_hi; ++j)
+            for (int i = i_lo; i <= i_hi; ++i)
+                cells.push_back({std::hypot(i * step_x, j * step_y), j, i});
+        // Nearest first; at equal distance the source's row, then the row behind, then left to right.
+        std::sort(cells.begin(), cells.end(), [](const Cell& a, const Cell& b) {
+            if (std::abs(a.dist - b.dist) > 1e-6)
+                return a.dist < b.dist;
+            if (std::abs(a.j) != std::abs(b.j))
+                return std::abs(a.j) < std::abs(b.j);
+            if (a.j != b.j)
+                return a.j > b.j;
+            return a.i > b.i;
+        });
+        for (const Cell& c : cells) {
+            const Vec2d        min = box.min + Vec2d(c.i * step_x, c.j * step_y);
+            const BoundingBoxf cell(min, min + size);
+            if (clear_of(cell, it->second) && clear_of(cell, m_placed)) {
+                m_placed.push_back(cell);
+                return min;
+            }
+        }
+        return std::nullopt;
+    }
+
+    Vec2d parked(const BoundingBoxf& box, int plate_idx)
+    {
+        if (!m_all_instances)
+            m_all_instances = instance_boxes(-1);
+        // Plates are laid out in rows towards -y from the first row, which ends at the bed depth.
+        const Vec3d  bed = plate_size();
+        const Vec2d  size = box.size();
+        const double step_x = size.x() + m_spacing, step_y = size.y() + m_spacing;
+        const double x0 = plate_origin(plate_idx).x();
+        const double y0 = bed.y() + std::max(m_spacing, 10.);
+        const int    per_row = std::max(1, static_cast<int>(bed.x() / step_x));
+        for (int k = 0;; ++k) {
+            const Vec2d        min(x0 + (k % per_row) * step_x, y0 + (k / per_row) * step_y);
+            const BoundingBoxf cell(min, min + size);
+            if (clear_of(cell, *m_all_instances) && clear_of(cell, m_placed)) {
+                m_placed.push_back(cell);
+                return min;
+            }
+        }
+    }
+};
+
+
 json object_duplicate(ToolContext& ctx)
 {
     Model&                     m = model();
@@ -669,23 +798,12 @@ json object_duplicate(ToolContext& ctx)
         names.push_back(ref.kind == IdKind::Object ? Ids::of(*ref.object) : Ids::of(*ref.instance));
     ctx.snapshot("duplicate " + ids_summary(names) + " x" + std::to_string(copies));
 
-    // Copies are laid out in rows to the right of the source, `spacing` mm apart, wrapping at the
-    // plate's edge; anything that does not fit stays outside the plate (object_arrange packs them).
-    const Vec3d bed = plate_size();
-    auto        place = [&](const BoundingBoxf3& box, int plate_idx, int k) {
-        const Vec3d  origin = plate_origin(plate_idx >= 0 ? plate_idx : 0);
-        const double step_x = box.size().x() + spacing, step_y = box.size().y() + spacing;
-        const double start_x = box.min.x() - origin.x();
-        const int    per_row = std::max(1, static_cast<int>((bed.x() - start_x - box.size().x()) / step_x) + 1);
-        const int    col = k % per_row, row = k / per_row;
-        const double x = box.min.x() + col * step_x;
-        const double y = box.min.y() - row * step_y;
-        return Vec3d(x - box.min.x(), y - box.min.y(), 0.);
-    };
-
+    CopyPlacer       placer(spacing);
     std::set<int>    changed;
     std::vector<int> new_objects;
     json             created_instances = json::array();
+    // (object index, instance index, source plate) of every copy, for the report.
+    std::vector<std::tuple<int, int, int>> copies_made;
     for (const ItemRef& ref : refs) {
         const int obj_idx = ref.obj_idx;
         ModelObject* object = m.objects[static_cast<size_t>(obj_idx)];
@@ -702,8 +820,9 @@ json object_duplicate(ToolContext& ctx)
                 const int            plate_idx = Ids::plate_of_instance(obj_idx, src);
                 for (int k = 1; k <= copies; ++k) {
                     ModelInstance* copy = object->add_instance(*source);
-                    copy->set_offset(source->get_offset() + place(box, plate_idx, k));
+                    copy->set_offset(source->get_offset() + placer.place(box, plate_idx));
                     created_instances.push_back(Ids::of(*copy));
+                    copies_made.emplace_back(obj_idx, static_cast<int>(object->instances.size()) - 1, plate_idx);
                 }
             }
             object->invalidate_bounding_box();
@@ -717,15 +836,43 @@ json object_duplicate(ToolContext& ctx)
                     ModelObject* copy = m.add_object(*m.objects[static_cast<size_t>(obj_idx)]);
                     copy->clear_instances();
                     ModelInstance* inst = copy->add_instance(*m.objects[static_cast<size_t>(obj_idx)]->instances[static_cast<size_t>(src)]);
-                    inst->set_offset(inst->get_offset() + place(box, plate_idx, k));
+                    inst->set_offset(inst->get_offset() + placer.place(box, plate_idx));
                     copy->invalidate_bounding_box();
                     new_objects.push_back(static_cast<int>(m.objects.size()) - 1);
+                    copies_made.emplace_back(new_objects.back(), 0, plate_idx);
                 }
             }
         }
     }
     refresh_structure();
     ctx.set_slice_invalidated();
+
+    // Where each copy ended up, from the plates' own records (as scene_get reports it).
+    json               placed = json::array();
+    std::map<int, int> off_plate, elsewhere; // source plate -> number of copies
+    std::set<int>      other_plates;
+    for (const auto& [o, i, source_plate] : copies_made) {
+        const json inst = Scene::instance_json(o, i);
+        placed.push_back(json::object({{"id", inst["id"]}, {"plate", inst["plate"]}, {"outside_plate", inst["outside_plate"]}}));
+        const int plate_idx = inst["plate"].is_number() ? inst["plate"].get<int>() - 1 : -1;
+        if (inst["outside_plate"].get<bool>())
+            ++off_plate[source_plate];
+        else if (plate_idx != source_plate) {
+            ++elsewhere[source_plate];
+            other_plates.insert(plate_idx + 1);
+        }
+    }
+    auto from = [](int plate_idx, int n) {
+        return std::to_string(n) + (n == 1 ? " copy" : " copies") + " of the source(s) on " +
+               (plate_idx >= 0 ? "plate " + std::to_string(plate_idx + 1) : std::string("no plate"));
+    };
+    for (const auto& [source_plate, n] : off_plate)
+        ctx.note(from(source_plate, n) + (source_plate >= 0 ? " did not fit beside the objects there and" : "") +
+                 " wait outside every plate, behind the bed (outside_plate: true). object_arrange scope \"all\" packs them "
+                 "(adding plates as needed), scope \"plate\" with include_off_plate: true packs them onto that plate; or delete them.");
+    for (const auto& [source_plate, n] : elsewhere)
+        ctx.note(from(source_plate, n) + " landed on plate(s) " + json(std::vector<int>(other_plates.begin(), other_plates.end())).dump() +
+                 "; see `placed`.");
 
     json out = json::object();
     out["ok"] = true;
@@ -734,6 +881,7 @@ json object_duplicate(ToolContext& ctx)
         out["changed"] = objects_json(std::vector<int>(changed.begin(), changed.end()));
     } else
         out["created"] = objects_json(new_objects);
+    out["placed"] = std::move(placed);
     return out;
 }
 
@@ -1306,10 +1454,13 @@ MCP_TOOL_GROUP(Objects)
         tool.title = "Duplicate objects or instances";
         tool.description =
             "Copy objects or instances `copies` times, as extra instances of the same object (as: \"instances\", default; they share "
-            "mesh and settings) or as independent objects (as: \"objects\"). Copies are laid out in a row next to the source, `spacing` "
-            "mm apart (default 5), wrapping on the plate; copies that do not fit end up outside the plate (outside_plate: true), so "
-            "call object_arrange to pack them. Removing instances is `delete` with instance ids. One undo step. Returns `created` "
-            "(instance ids, or new objects).";
+            "mesh and settings) or as independent objects (as: \"objects\"). Each copy goes on the source's own plate, in the free spot "
+            "nearest the source on a grid of source-sized cells `spacing` mm apart (default 5), clear of the plate's objects, the "
+            "prime tower and earlier copies; nothing is rotated or packed. A copy that does not fit there (or of a source on no "
+            "plate) is parked behind the plates, outside every plate (plate: null, outside_plate: true, with a note); never on "
+            "another plate. object_arrange packs parked copies (scope \"all\", or scope \"plate\" with include_off_plate: true). "
+            "Removing instances is `delete` with instance ids. One undo step. Returns `created` (instance ids, or new objects) and "
+            "`placed`: [{id, plate, outside_plate}] for every copy.";
         tool.input_schema = Schema::parse(R"JSON({
             "type": "object",
             "properties": {
@@ -1417,7 +1568,10 @@ MCP_TOOL_GROUP(Objects)
         tool.title = "Arrange objects on plates";
         tool.description =
             "Auto-arrange the objects of one plate (scope \"plate\", default the current plate) or of all plates (scope \"all\"; may "
-            "add plates). The arrange settings you pass override the GUI's arrange settings for this call; omitted ones keep the "
+            "add plates, and also packs instances that are on no plate). Scope \"plate\" only rearranges the instances already on "
+            "that plate (touching it counts) and never adds plates: instances on no plate are left where they are and listed in "
+            "result.left_out, unless include_off_plate: true brings them onto the plate first; whatever does not fit ends up on no "
+            "plate. The result's outside_plates lists every instance on no plate afterwards. The arrange settings you pass override the GUI's arrange settings for this call; omitted ones keep the "
             "GUI's: spacing (mm, 0 = automatic), allow_rotation (turn parts to pack tighter), multi_material_same_plate, "
             "avoid_calibration_region, align_to_y (turn each part so its longest side runs along Y; the GUI has it on for BBL "
             "printers, so parts get turned unless you pass false). allow_rotation false without align_to_y also switches align_to_y "
@@ -1434,6 +1588,7 @@ MCP_TOOL_GROUP(Objects)
                 "multi_material_same_plate": {"type": "boolean"},
                 "avoid_calibration_region": {"type": "boolean"},
                 "align_to_y": {"type": "boolean"},
+                "include_off_plate": {"type": "boolean", "default": false},
                 "wait_s": {"type": "number", "minimum": 0, "maximum": 280, "default": 60}
             },
             "additionalProperties": false})JSON", "object_arrange");

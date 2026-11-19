@@ -456,6 +456,86 @@ def test_export_not_sliced(m, out_dir):
 # -> diff -> export -> the file says what the tools said.
 # ------------------------------------------------------------------------------------------------
 
+# ------------------------------------------------------------------------------------------------
+# Prime tower: moving it invalidates the result at once; the stored (clamped) position is explained.
+# ------------------------------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def tower(launch_app) -> McpClient:
+    """Its own instance: two cubes on two filaments, so plate 1 gets a prime tower."""
+    app = launch_app("slice_tower", files=[str(CUBE)])
+    client = McpClient(app.url, app.token, era="modern", timeout=320).connect()
+    cube = client.tool("scene_get")["plates"][0]["objects"][0]["id"]
+    client.tool("filament_edit", action="add", color="#FF0000")
+    copy = client.tool("object_duplicate", targets=[cube], **{"as": "objects"})["created"][0]["id"]
+    client.tool("object_update", targets=[copy], filament=2)
+    client.tool("settings_set", scope="process", values={"enable_prime_tower": True})
+    return client
+
+
+def first_number(value) -> float:
+    return float(value[0] if isinstance(value, list) else str(value).split(",")[0])
+
+
+def tower_xy(client):
+    v = client.tool("settings_get", scope="project", keys=["wipe_tower_x", "wipe_tower_y"])["values"]
+    return first_number(v["wipe_tower_x"]), first_number(v["wipe_tower_y"])
+
+
+def close2(a, b, tol=0.01):
+    return len(a) == len(b) and all(abs(p - q) <= tol for p, q in zip(a, b))
+
+
+def test_prime_tower_footprint_in_scene(tower):
+    pt = tower.tool("scene_get")["plates"][0]["prime_tower"]
+    assert pt is not None and pt["source"] in ("estimate", "sliced"), pt
+    ensure_sliced(tower)
+    pt = tower.tool("scene_get")["plates"][0]["prime_tower"]
+    assert pt["source"] == "sliced", pt
+    x, y = tower_xy(tower)
+    assert close2(pt["position"], [x, y]), (pt, x, y)
+    assert pt["size"][0] > 0 and pt["size"][1] > 0 and pt["height"] > 0
+    box = pt["box"]
+    assert close2([box["max"][0] - box["min"][0], box["max"][1] - box["min"][1]], pt["size"])
+    # The footprint (brim included) contains the tower's front-left corner.
+    assert box["min"][0] <= x + 0.01 and box["min"][1] <= y + 0.01 and box["max"][0] > x and box["max"][1] > y, (box, x, y)
+
+
+def test_prime_tower_move_then_slice_at_once_is_not_reused(tower):
+    ensure_sliced(tower)
+    x, y = tower_xy(tower)
+    # Writing the value it already has changes nothing: no invalidation, the result stays. (The value
+    # read back is rounded to 4 decimals, so the first write may store it as given; the second is a no-op.)
+    tower.tool("settings_set", scope="project", values={"wipe_tower_x": [x]})
+    ensure_sliced(tower)
+    same = tower.tool("settings_set", scope="project", values={"wipe_tower_x": [x]})
+    assert "slice_invalidated" not in same, same
+    assert tower.tool("slice", wait_s=30).get("reused") is True
+    # Move the tower and slice right away (no pause for the application's 0.5 s apply timer).
+    nx = 40.0 if x > 100 else 160.0
+    moved = tower.tool("settings_set", scope="project", values={"wipe_tower_x": [nx], "wipe_tower_y": [150.0]})
+    assert moved.get("slice_invalidated") is True, moved
+    r = tower.tool("slice", wait_s=200)
+    assert r["status"] == "finished" and r.get("reused") is not True, r
+    pt = tower.tool("scene_get")["plates"][0]["prime_tower"]
+    assert pt["source"] == "sliced" and close2(pt["position"], list(tower_xy(tower))), pt
+    # A status read right after a move reports it too.
+    tower.tool("settings_set", scope="project", values={"wipe_tower_x": [x], "wipe_tower_y": [y]})
+    assert tower.tool("slice_status")["plates"][0]["state"] == "invalidated"
+    assert tower.tool_error("slice_result").code == "not_sliced"
+
+
+def test_prime_tower_clamped_position_is_explained(tower):
+    r = tower.tool("settings_set", scope="project", values={"wipe_tower_y": [1.5]})
+    entry = next(e for e in r["changed"] if e["key"] == "wipe_tower_y")
+    assert entry["requested"] != entry["new"], entry
+    assert abs(first_number(entry["new"]) - 1.5) > 0.5, entry
+    assert any("wipe_tower_y was stored as" in n and "front-left corner" in n for n in r.get("notes", [])), r
+    # A value kept as given carries no `requested`.
+    ok = tower.tool("settings_set", scope="project", values={"wipe_tower_y": [150.0]})
+    assert all("requested" not in e for e in ok["changed"]), ok
+
+
 def test_end_to_end_scenario(launch_app, out_dir):
     roots = ";".join(str(p) for p in (DATA, HANDY, out_dir))
     app = launch_app("slice_e2e", files=[str(BENCHY)], extra_env={"ORCA_MCP_ROOTS": roots})
