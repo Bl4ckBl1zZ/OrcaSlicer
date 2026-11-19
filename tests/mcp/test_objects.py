@@ -431,3 +431,17 @@ def test_convert_units_and_scale_to_fit(ec):
     assert close(size[0], min(bed) - 20, 0.05) or close(size[2], scene(ec)["printer"]["height"], 0.05)
     assert ec.tool_error("mesh_edit", op="simplify", targets=[cube["id"]], target_ratio=0).code == "invalid_argument"
     assert ec.tool_error("mesh_edit", op="convert_units", targets=[instance_of(cube)["id"]], **{"from": "inch"}).code == "invalid_argument"
+
+
+def test_lay_flat_face_from_mesh_query(ec):
+    box = add_cube(ec, size=(30, 20, 10))
+    oid = box["id"]
+    faces = ec.tool("mesh_query", kind="flat_faces", targets=[oid])["flat_faces"][0]["faces"]
+    choice = next(f for f in faces if not f.get("on_bed") and abs(f["area_mm2"] - 200) < 1)  # a 20 x 10 end
+    flat = ec.tool("object_transform", targets=[oid], lay_flat={"face": choice["face"]})
+    assert flat["details"][0]["lay_flat"]["face"] == choice["face"]
+    assert close(bbox_size(instance_of(flat["changed"][0]))[2], 30, 1e-2)
+    after = ec.tool("mesh_query", kind="flat_faces", targets=[oid])["flat_faces"][0]["faces"]
+    assert any(f.get("on_bed") and abs(f["area_mm2"] - 200) < 1 for f in after)
+    failure = ec.tool_error("object_transform", targets=[oid], lay_flat={"face": 99})
+    assert failure.code == "invalid_argument" and "mesh_query" in failure.hint

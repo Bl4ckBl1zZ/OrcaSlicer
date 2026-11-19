@@ -81,11 +81,7 @@ std::vector<int> new_object_indices(const std::set<size_t>& before)
     return out;
 }
 
-void refresh_structure()
-{
-    plates().reload_all_objects();
-    Refresh::full();
-}
+void refresh_structure() { Refresh::structure(); }
 
 json objects_json(const std::vector<int>& obj_idxs)
 {

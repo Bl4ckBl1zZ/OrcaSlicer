@@ -365,6 +365,8 @@ json model_import(ToolContext& ctx)
     out["imported"] = objects_json(created);
     if (!failed.empty())
         out["failed"] = failed;
+    if (created.size() > 1)
+        ctx.note("Imported objects are placed as the GUI places them and may overlap; object_arrange packs them.");
     return out;
 }
 

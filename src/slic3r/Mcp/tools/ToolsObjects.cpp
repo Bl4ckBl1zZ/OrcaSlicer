@@ -28,6 +28,7 @@
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Plater.hpp"
 
+#include "../McpGeometry.hpp"
 #include "../McpIds.hpp"
 #include "../McpRefresh.hpp"
 #include "../McpScene.hpp"
@@ -205,7 +206,7 @@ BoundingBoxf3 volume_box(const ModelVolume& volume) { return volume.mesh().trans
 
 Transform3d about(const Vec3d& pivot, const Transform3d& op)
 {
-    return Geometry::translation_transform(pivot) * op * Geometry::translation_transform(-pivot);
+    return Slic3r::Geometry::translation_transform(pivot) * op * Slic3r::Geometry::translation_transform(-pivot);
 }
 
 Transform3d rotation_about_axis(const Vec3d& axis, double angle_rad)
@@ -226,41 +227,6 @@ Transform3d linear_only(const Matrix3d& m)
 Matrix3d rotation_between(const Vec3d& from, const Vec3d& to)
 {
     return Eigen::Quaterniond::FromTwoVectors(from.normalized(), to.normalized()).toRotationMatrix();
-}
-
-struct FlatFace
-{
-    Vec3d  normal;
-    double offset { 0. };
-    double area { 0. };
-};
-
-// Planes of the convex hull of a world-space mesh, merged by normal and offset, largest first.
-std::vector<FlatFace> hull_faces(const TriangleMesh& world_mesh)
-{
-    const TriangleMesh    hull = world_mesh.convex_hull_3d();
-    std::vector<FlatFace> faces;
-    const double          size = std::max(1., world_mesh.bounding_box().size().norm());
-    for (const auto& f : hull.its.indices) {
-        const Vec3d a = hull.its.vertices[f[0]].cast<double>();
-        const Vec3d b = hull.its.vertices[f[1]].cast<double>();
-        const Vec3d c = hull.its.vertices[f[2]].cast<double>();
-        Vec3d       n = (b - a).cross(c - a);
-        const double area2 = n.norm();
-        if (area2 < 1e-12)
-            continue;
-        n /= area2;
-        const double d = n.dot(a);
-        auto it = std::find_if(faces.begin(), faces.end(), [&](const FlatFace& face) {
-            return face.normal.dot(n) > 0.9999 && std::abs(face.offset - d) < 1e-4 * size;
-        });
-        if (it == faces.end())
-            faces.push_back({n, d, 0.5 * area2});
-        else
-            it->area += 0.5 * area2;
-    }
-    std::sort(faces.begin(), faces.end(), [](const FlatFace& a, const FlatFace& b) { return a.area > b.area; });
-    return faces;
 }
 
 json object_transform(ToolContext& ctx)
@@ -370,7 +336,7 @@ json object_transform(ToolContext& ctx)
             const bool   local = frame == "local";
             if (a.contains("reset")) {
                 const Vec3d c = center();
-                Geometry::Transformation tr = volume->get_transformation();
+                Slic3r::Geometry::Transformation tr = volume->get_transformation();
                 for (const auto& what : a["reset"]) {
                     const std::string w = what.get<std::string>();
                     if (w == "rotation") tr.set_rotation(Vec3d::Zero());
@@ -383,7 +349,7 @@ json object_transform(ToolContext& ctx)
             if (a.contains("set_scale")) {
                 const json& s = a["set_scale"];
                 const Vec3d c = center();
-                Geometry::Transformation tr = volume->get_transformation();
+                Slic3r::Geometry::Transformation tr = volume->get_transformation();
                 tr.set_scaling_factor(s.is_number() ? Vec3d::Constant(s.get<double>()) : vec3_arg(s));
                 volume->set_transformation(tr);
                 volume->set_offset(volume->get_offset() + c - center());
@@ -393,11 +359,11 @@ json object_transform(ToolContext& ctx)
                 const Vec3d f = s.is_number() ? Vec3d::Constant(s.get<double>()) : vec3_arg(s);
                 const Transform3d V = volume->get_matrix();
                 const Vec3d pivot_local = V.inverse() * center();
-                volume->set_transformation(V * about(pivot_local, Geometry::scale_transform(f)));
+                volume->set_transformation(V * about(pivot_local, Slic3r::Geometry::scale_transform(f)));
             }
             if (a.contains("set_rotation")) {
                 const Vec3d c = center();
-                Geometry::Transformation tr = volume->get_transformation();
+                Slic3r::Geometry::Transformation tr = volume->get_transformation();
                 tr.set_rotation(vec3_arg(a["set_rotation"]) * DEG);
                 volume->set_transformation(tr);
                 volume->set_offset(volume->get_offset() + c - center());
@@ -444,13 +410,13 @@ json object_transform(ToolContext& ctx)
         ModelInstance* instance = t.instance;
         const int      inst_idx = static_cast<int>(std::find(object->instances.begin(), object->instances.end(), instance) - object->instances.begin());
         auto           center = [&]() { return instance_box(*object, *instance).center(); };
-        auto           set_matrix = [&](const Transform3d& M) { instance->set_transformation(Geometry::Transformation(M)); object->invalidate_bounding_box(); };
+        auto           set_matrix = [&](const Transform3d& M) { instance->set_transformation(Slic3r::Geometry::Transformation(M)); object->invalidate_bounding_box(); };
         auto           keep_center = [&](const Vec3d& c) { instance->set_offset(instance->get_offset() + c - center()); object->invalidate_bounding_box(); };
         const bool     local = frame == "local";
 
         if (a.contains("reset")) {
             const Vec3d c = center();
-            Geometry::Transformation tr = instance->get_transformation();
+            Slic3r::Geometry::Transformation tr = instance->get_transformation();
             for (const auto& what : a["reset"]) {
                 const std::string w = what.get<std::string>();
                 if (w == "rotation") tr.set_rotation(Vec3d::Zero());
@@ -464,7 +430,7 @@ json object_transform(ToolContext& ctx)
         if (a.contains("set_scale")) {
             const json& s = a["set_scale"];
             const Vec3d c = center();
-            Geometry::Transformation tr = instance->get_transformation();
+            Slic3r::Geometry::Transformation tr = instance->get_transformation();
             tr.set_scaling_factor(s.is_number() ? Vec3d::Constant(s.get<double>()) : vec3_arg(s));
             instance->set_transformation(tr);
             object->invalidate_bounding_box();
@@ -479,7 +445,7 @@ json object_transform(ToolContext& ctx)
                 if (v->is_model_part())
                     local_box.merge(volume_box(*v));
             const Vec3d raw = local_box.size();
-            Geometry::Transformation tr = instance->get_transformation();
+            Slic3r::Geometry::Transformation tr = instance->get_transformation();
             Vec3d scale = tr.get_scaling_factor();
             const bool uniform = ss.value("uniform", true);
             const json& size = ss["size"];
@@ -509,11 +475,11 @@ json object_transform(ToolContext& ctx)
             const json& s = a["scale"];
             const Vec3d f = s.is_number() ? Vec3d::Constant(s.get<double>()) : vec3_arg(s);
             const Transform3d M = instance->get_matrix();
-            set_matrix(M * about(M.inverse() * center(), Geometry::scale_transform(f)));
+            set_matrix(M * about(M.inverse() * center(), Slic3r::Geometry::scale_transform(f)));
         }
         if (a.contains("set_rotation")) {
             const Vec3d c = center();
-            Geometry::Transformation tr = instance->get_transformation();
+            Slic3r::Geometry::Transformation tr = instance->get_transformation();
             tr.set_rotation(vec3_arg(a["set_rotation"]) * DEG);
             instance->set_transformation(tr);
             object->invalidate_bounding_box();
@@ -573,20 +539,28 @@ json object_transform(ToolContext& ctx)
                     fail("invalid_argument", "`lay_flat.frame` must be \"world\" or \"object\".");
                 down_world = n.normalized();
             } else {
-                // auto: the largest flat face of the convex hull, as the Lay-on-face gizmo offers them.
+                // A face of the convex hull, as mesh_query flat_faces lists them (largest first):
+                // `face` is an index into that list, `auto` takes the rank-th largest.
                 TriangleMesh mesh = object->raw_mesh();
                 mesh.transform(M);
-                const std::vector<FlatFace> faces = hull_faces(mesh);
+                const std::vector<Mcp::Geometry::FlatFace> faces = Mcp::Geometry::flat_faces(mesh);
                 if (faces.empty())
                     fail("mesh_error", Ids::of(*object) + " has no flat face to lay on.");
-                const int rank = lf.value("rank", 1);
-                const size_t index = std::min<size_t>(static_cast<size_t>(std::max(1, rank) - 1), faces.size() - 1);
+                size_t index = 0;
+                if (lf.contains("face")) {
+                    index = lf["face"].get<size_t>();
+                    if (index >= faces.size())
+                        fail("invalid_argument", "`lay_flat.face` " + std::to_string(index) + " is out of range: " + Ids::of(*instance) + " has " +
+                             std::to_string(faces.size()) + " flat faces.", "Face numbers come from mesh_query kind \"flat_faces\" for this instance.");
+                } else
+                    index = std::min<size_t>(static_cast<size_t>(std::max(1, lf.value("rank", 1)) - 1), faces.size() - 1);
                 down_world = faces[index].normal;
+                info["face"] = index;
                 info["face_area_mm2"] = Scene::round4(faces[index].area);
                 info["rank"] = static_cast<int>(index) + 1;
                 json candidates = json::array();
                 for (size_t k = 0; k < faces.size() && k < 5; ++k)
-                    candidates.push_back(json::object({{"rank", k + 1}, {"normal_world", vec3_json(faces[k].normal)}, {"area_mm2", Scene::round4(faces[k].area)}}));
+                    candidates.push_back(json::object({{"face", k}, {"normal_world", vec3_json(faces[k].normal)}, {"area_mm2", Scene::round4(faces[k].area)}}));
                 info["candidates"] = candidates;
             }
             info["normal_world_before"] = vec3_json(down_world);
@@ -1095,7 +1069,7 @@ json object_cut(ToolContext& ctx)
     ctx.snapshot("cut " + Ids::of(*object));
     // Cut matrix as the Cut gizmo builds it: in world orientation, relative to the instance offset;
     // its +Z is the plane normal ("upper" side).
-    Transform3d cut_matrix = Geometry::translation_transform(point - instance->get_offset());
+    Transform3d cut_matrix = Slic3r::Geometry::translation_transform(point - instance->get_offset());
     cut_matrix.linear() = rotation_between(Vec3d::UnitZ(), normal);
     const std::set<size_t> before = object_id_set();
     const std::string      old_id = Ids::of(*object);
@@ -1114,6 +1088,8 @@ json object_cut(ToolContext& ctx)
     out["ok"] = true;
     out["removed"] = json::array({old_id});
     out["created"] = objects_json(created);
+    if (created.size() > 1)
+        ctx.note("The pieces stay where they were cut, so they overlap on the plate (as after the GUI's Cut); object_arrange separates them.");
     ctx.note("The new objects are selected in the window, as after the GUI's Cut.");
     return out;
 }
@@ -1204,7 +1180,7 @@ json mesh_edit(ToolContext& ctx)
                 const Vec3d size = box.size();
                 const double factor = std::min({room.x() / size.x(), room.y() / size.y(), room.z() / size.z()});
                 const Vec3d c = box.center();
-                Geometry::Transformation tr = instance->get_transformation();
+                Slic3r::Geometry::Transformation tr = instance->get_transformation();
                 tr.set_scaling_factor(tr.get_scaling_factor() * factor);
                 instance->set_transformation(tr);
                 ref.object->invalidate_bounding_box();
@@ -1277,8 +1253,8 @@ MCP_TOOL_GROUP(Objects)
             "{axis: x|y|z|[vector], angle_deg, about: center|origin}, scale (factor or [x,y,z], in the item's own axes), mirror (axis). "
             "`frame`: \"plate\"/\"world\" (axes of the bed, default) or \"local\" (the item's own axes) for rotate, mirror, translate. "
             "lay_flat puts a face on the bed: {facet: n, volume?} (a mesh facet id), {normal: [x,y,z], frame: world|object} (the "
-            "direction that should face down), or {auto: true, rank?} (the largest flat face of the convex hull; rank 2 = second "
-            "largest; candidates are returned). Parts are transformed in their object's frame (translate, rotate, scale, mirror, "
+            "direction that should face down), {face: n} (a face number from mesh_query flat_faces), or {auto: true, rank?} (the "
+            "largest flat face of the convex hull; rank 2 = second largest; candidates are returned). Parts are transformed in their object's frame (translate, rotate, scale, mirror, "
             "set_*). drop_to_bed (default true) puts each instance's lowest point at z = 0; move_to.z_min > 0 switches the object's "
             "auto-drop off. One undo step. Returns the changed objects with new boxes and plate assignments.";
         tool.input_schema = Schema::parse(R"JSON({
@@ -1311,6 +1287,7 @@ MCP_TOOL_GROUP(Objects)
                 "lay_flat": {"oneOf": [
                     {"type": "object", "properties": {"facet": {"type": "integer", "minimum": 0}, "volume": {"$ref": "#/$defs/Id"}}, "required": ["facet"], "additionalProperties": false},
                     {"type": "object", "properties": {"normal": {"$ref": "#/$defs/Vec3"}, "frame": {"enum": ["world", "object"]}}, "required": ["normal"], "additionalProperties": false},
+                    {"type": "object", "properties": {"face": {"type": "integer", "minimum": 0}}, "required": ["face"], "additionalProperties": false},
                     {"type": "object", "properties": {"auto": {"const": true}, "rank": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["auto"], "additionalProperties": false}]},
                 "drop_to_bed": {"type": "boolean", "default": true}
             },
