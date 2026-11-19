@@ -260,6 +260,139 @@ def test_duplicate_errors(ec):
     assert ec.tool_error("object_duplicate", targets=[cube["id"]], copies=201).code == "invalid_argument"
 
 
+# object_duplicate with `at`: an explicit layout in one call.
+
+def z_turn(inst) -> float:
+    return inst["rotation"][2]
+
+
+def same_angle(a, b, tol=1e-2) -> bool:
+    return abs((a - b + 180) % 360 - 180) <= tol
+
+
+def instances_by_id(c, oid) -> dict:
+    return {i["id"]: i for i in get_object(c, oid)["instances"]}
+
+
+def test_duplicate_at_places_and_rotates(ec):
+    bar = add_cube(ec, size=(30, 10, 10), center=[200, 200])
+    ec.tool("object_transform", targets=[bar["id"]], rotate={"axis": "z", "angle_deg": 10})
+    source = instance_of(get_object(ec, bar["id"]))
+    before = normalized(scene(ec, limit=500))
+    at = [{"center": [40, 40]},
+          {"center": [100.25, 40.5], "rotate_z_deg": 80},
+          {"center": [160, 40], "rotate_z_deg": -55},
+          {"center": [40, 120.75], "rotate_z_deg": 170}]
+    dup = ec.tool("object_duplicate", targets=[bar["id"]], at=at)
+    assert len(dup["created"]) == 4 and len(dup["placed"]) == 4
+    assert [p["id"] for p in dup["placed"]] == dup["created"]
+    assert all(p["plate"] == 1 and p["outside_plate"] is False for p in dup["placed"]), dup["placed"]
+    assert not dup.get("notes"), dup.get("notes")
+    assert dup["undo"] == f"MCP: duplicate {source['id']} at 4 positions on plate 1"
+    insts = instances_by_id(ec, bar["id"])
+    for iid, spot in zip(dup["created"], at):
+        inst = insts[iid]
+        assert close(inst["center"], spot["center"], 0.05), (inst["center"], spot)
+        assert same_angle(z_turn(inst), z_turn(source) + spot.get("rotate_z_deg", 0)), (z_turn(inst), spot)
+        assert close(inst["z_min"], source["z_min"], 1e-3)
+    # An 80 + 10 = 90 degree turn stands the 30 mm side along Y.
+    assert close(bbox_size(insts[dup["created"][1]])[:2], [10, 30], 1e-2)
+    # The source stays where it was.
+    assert close(insts[source["id"]]["center"], source["center"], 1e-3)
+    assert same_angle(z_turn(insts[source["id"]]), 10)
+    assert_undo_roundtrip(ec, before)
+
+
+def test_duplicate_at_move_source_fills_first_slot(ec):
+    cube = add_cube(ec)
+    source = instance_of(cube)
+    before = normalized(scene(ec, limit=500))
+    at = [{"center": [30, 30], "rotate_z_deg": 45}, {"center": [80, 30]}, {"center": [130, 30], "rotate_z_deg": 30}]
+    dup = ec.tool("object_duplicate", targets=[source["id"]], at=at, move_source=True, copies=2)
+    assert len(dup["created"]) == 2 and source["id"] not in dup["created"]
+    assert [p["id"] for p in dup["placed"]] == [source["id"]] + dup["created"]
+    insts = instances_by_id(ec, cube["id"])
+    assert len(insts) == 3
+    for p, spot in zip(dup["placed"], at):
+        assert close(insts[p["id"]]["center"], spot["center"], 0.05), (insts[p["id"]]["center"], spot)
+        assert same_angle(z_turn(insts[p["id"]]), spot.get("rotate_z_deg", 0))
+    assert_undo_roundtrip(ec, before)
+    undo(ec)
+    # One position with move_source is a plain move: no copies.
+    moved = ec.tool("object_duplicate", targets=[cube["id"]], at=[{"center": [50, 60]}], move_source=True)
+    assert moved["created"] == [] and [p["id"] for p in moved["placed"]] == [source["id"]]
+    assert close(instance_of(get_object(ec, cube["id"]))["center"], [50, 60], 0.05)
+
+
+def test_duplicate_at_other_plate_as_objects(ec):
+    ec.tool("plate_manage", action="add")
+    cube = add_cube(ec, size=(20, 10, 5))
+    at = [{"center": [50, 50]}, {"center": [120, 50], "rotate_z_deg": 90}]
+    dup = ec.tool("object_duplicate", targets=[cube["id"]], at=at, plate=2, **{"as": "objects"})
+    assert len(dup["created"]) == 2 and all(o["id"].startswith("o") for o in dup["created"])
+    assert [p["plate"] for p in dup["placed"]] == [2, 2] and not any(p["outside_plate"] for p in dup["placed"])
+    for obj, spot in zip(dup["created"], at):
+        inst = instance_of(get_object(ec, obj["id"]))
+        assert inst["plate"] == 2 and close(inst["center"], spot["center"], 0.05), inst  # plate 2's frame
+        assert same_angle(z_turn(inst), spot.get("rotate_z_deg", 0))
+    assert instance_of(get_object(ec, cube["id"]))["plate"] == 1
+    assert [len(p["objects"]) for p in scene(ec)["plates"]] == [1, 2]
+    assert dup["undo"].endswith("on plate 2")
+
+
+def test_duplicate_at_reports_instances_off_the_plate(ec):
+    cube = add_cube(ec)
+    bed = scene(ec)["printer"]["bed"]
+    at = [{"center": [60, 60]}, {"center": [bed[0], 60]}, {"center": [-300, 60]}]
+    dup = ec.tool("object_duplicate", targets=[cube["id"]], at=at)
+    placed = dup["placed"]
+    assert [p["outside_plate"] for p in placed] == [False, True, True], placed
+    assert placed[0]["plate"] == 1 and placed[2]["plate"] is None, placed
+    assert any("outside_plate" in n and "[1,2]" in n for n in dup["notes"]), dup["notes"]
+    # Positions are taken as given, even half off the bed.
+    insts = instances_by_id(ec, cube["id"])
+    assert close(insts[placed[1]["id"]]["center"], [bed[0], 60], 0.05)
+
+
+def test_duplicate_at_errors(ec):
+    cube = add_cube(ec)
+    oid, iid = cube["id"], instance_of(cube)["id"]
+    before = normalized(scene(ec, limit=500))
+    spot = [{"center": [50, 50]}]
+
+    def code(**kw):
+        return ec.tool_error("object_duplicate", **kw)
+
+    assert code(targets=[oid], at=[]).code == "invalid_argument"
+    assert code(targets=[oid], at=[{"rotate_z_deg": 5}]).code == "invalid_argument"
+    assert code(targets=[oid], at=[{"center": [1, 2, 3]}]).code == "invalid_argument"
+    assert code(targets=[oid], at=[{"center": [1, 2], "turn": 5}]).code == "invalid_argument"
+    assert code(targets=[oid], at=[{"center": [1, 2], "rotate_z_deg": "x"}]).code == "invalid_argument"
+    failure = code(targets=[oid], at=spot * 3, copies=2)
+    assert failure.code == "invalid_argument" and "copies" in failure.message
+    failure = code(targets=[oid], at=spot * 3, move_source=True, copies=3)
+    assert failure.code == "invalid_argument" and "2 copies" in failure.message
+    assert code(targets=[oid], at=spot, spacing=2).code == "invalid_argument"
+    assert code(targets=[oid, iid], at=spot).code == "invalid_argument"
+    assert code(targets=[cube["volumes"][0]["id"]], at=spot).code == "invalid_argument"
+    assert code(targets=[oid], plate=1).code == "invalid_argument"
+    assert code(targets=[oid], move_source=True).code == "invalid_argument"
+    assert code(targets=[oid], at=spot, plate=7).code == "stale_id"
+    assert code(targets=[oid], at=spot * 501).code == "invalid_argument"  # schema maxItems
+    ec.tool("plate_manage", action="lock", plate=1)
+    assert code(targets=[oid], at=spot).code == "plate_locked"
+    ec.tool("plate_manage", action="unlock", plate=1)
+    # Nothing changed, and no undo step was taken by the failures.
+    after = normalized(scene(ec, limit=500))
+    for plate in after["plates"] + before["plates"]:
+        plate.pop("locked", None)
+    assert after == before
+    # An object with several instances is ambiguous as a source.
+    ec.tool("object_duplicate", targets=[oid])
+    failure = code(targets=[oid], at=spot)
+    assert failure.code == "invalid_argument" and "(i...)" in failure.hint
+
+
 def test_delete_instances_objects_parts(ec):
     cube = add_cube(ec)
     ec.tool("object_duplicate", targets=[cube["id"]], copies=2)

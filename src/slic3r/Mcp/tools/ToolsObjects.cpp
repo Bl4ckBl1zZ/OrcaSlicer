@@ -777,10 +777,159 @@ private:
 };
 
 
+// Turns an instance by `deg` about the world Z axis through its bounding-box centre, then moves it so
+// that centre is at world XY `target` (z unchanged). The same box centre object_transform move_to uses.
+void place_instance_at(ModelObject& object, ModelInstance& instance, const Vec2d& target, double deg)
+{
+    if (deg != 0.) {
+        const Vec3d c = instance_box(object, instance).center();
+        instance.set_transformation(Slic3r::Geometry::Transformation(about(c, rotation_about_axis(Vec3d::UnitZ(), deg * DEG)) * instance.get_matrix()));
+        object.invalidate_bounding_box();
+    }
+    const Vec3d c = instance_box(object, instance).center();
+    instance.set_offset(instance.get_offset() + Vec3d(target.x() - c.x(), target.y() - c.y(), 0.));
+    object.invalidate_bounding_box();
+}
+
+// object_duplicate with `at`: one source instance, one copy per position (the source itself takes the
+// first position with move_source), each turned by its rotate_z_deg and centred on its point.
+json object_duplicate_at(ToolContext& ctx, const std::vector<ItemRef>& refs, const std::string& as)
+{
+    Model&      m = model();
+    const json& a = ctx.args();
+    const json& at = a["at"];
+    if (refs.size() != 1)
+        fail("invalid_argument", "`at` places copies of one source; `targets` has " + std::to_string(refs.size()) + " items.",
+             "Give one object or instance id per call.");
+    const ItemRef& ref = refs.front();
+    if (ref.kind == IdKind::Volume)
+        fail("invalid_argument", "`targets`: " + Ids::of(*ref.volume) + " is a part; duplicate objects or instances.", "Use the object id.");
+    if (ref.kind == IdKind::Object && ref.object->instances.size() != 1)
+        fail("invalid_argument", "`at` needs one source instance; " + Ids::of(*ref.object) + " has " + std::to_string(ref.object->instances.size()) + " instances.",
+             "Pass the id of the instance to copy (i...).");
+    if (a.contains("spacing"))
+        fail("invalid_argument", "`spacing` has no effect with `at`: every copy goes where `at` says.", "Drop `spacing`.");
+    if (!at.is_array() || at.empty())
+        fail("invalid_argument", "`at` must be a non-empty list of {center: [x, y], rotate_z_deg?}.");
+    const bool   move_source = ctx.arg<bool>("move_source", false);
+    const size_t n_copies = at.size() - (move_source ? 1 : 0);
+    if (ctx.has("copies") && a["copies"].get<long long>() != static_cast<long long>(n_copies))
+        fail("invalid_argument", "`copies` is " + std::to_string(a["copies"].get<long long>()) + " but `at` gives " + std::to_string(at.size()) + " position(s)" +
+             (move_source ? ", the first for the source: " : ": ") + std::to_string(n_copies) + " copies.",
+             "Leave `copies` out with `at`; the number of copies follows from `at`.");
+    if (n_copies > 500)
+        fail("limit", "That would create " + std::to_string(n_copies) + " copies; at most 500 per call.", "Split the layout over several calls.");
+    std::vector<Vec2d>  centers;
+    std::vector<double> turns;
+    for (size_t k = 0; k < at.size(); ++k) {
+        const json&       p = at[k];
+        const std::string where = "`at[" + std::to_string(k) + "]`";
+        if (!p.is_object() || !p.contains("center") || !p["center"].is_array() || p["center"].size() != 2 || !p["center"][0].is_number() ||
+            !p["center"][1].is_number())
+            fail("invalid_argument", where + " needs `center`: [x, y] in mm (plate frame).");
+        for (const auto& [key, value] : p.items())
+            if (key != "center" && key != "rotate_z_deg")
+                fail("invalid_argument", where + ": unknown key \"" + key + "\".", "Each position is {center: [x, y], rotate_z_deg?}.");
+        if (p.contains("rotate_z_deg") && !p["rotate_z_deg"].is_number())
+            fail("invalid_argument", where + ".rotate_z_deg must be a number of degrees.");
+        const double x = p["center"][0].get<double>(), y = p["center"][1].get<double>();
+        const double turn = p.value("rotate_z_deg", 0.);
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(turn))
+            fail("invalid_argument", where + " has a value that is not a finite number.");
+        centers.emplace_back(x, y);
+        turns.push_back(turn);
+    }
+
+    const int obj_idx = ref.obj_idx;
+    const int src_idx = ref.kind == IdKind::Instance ? ref.inst_idx : 0;
+    ModelObject* object = m.objects[static_cast<size_t>(obj_idx)];
+    const int    source_plate = Ids::plate_of_instance(obj_idx, src_idx);
+    const int    plate_idx = ctx.has("plate") ? Ids::plate(a["plate"], "plate") : (source_plate >= 0 ? source_plate : 0);
+    if (plates().get_plate(plate_idx)->is_locked())
+        fail("plate_locked", "Plate " + std::to_string(plate_idx + 1) + " is locked; nothing can be placed on it.",
+             "Unlock it with plate_manage action \"unlock\", or pass another `plate`.");
+    const Vec3d origin = plate_origin(plate_idx);
+    auto        world = [&](size_t k) { return Vec2d(origin.x() + centers[k].x(), origin.y() + centers[k].y()); };
+
+    const std::string source_id = Ids::of(*object->instances[static_cast<size_t>(src_idx)]);
+    ctx.snapshot("duplicate " + source_id + " at " + std::to_string(at.size()) + (at.size() == 1 ? " position" : " positions") +
+                 " on plate " + std::to_string(plate_idx + 1));
+
+    // Copies are made first, from the source as it is; with move_source it moves last. (instances holds
+    // pointers, so `source` stays valid while add_instance grows it.)
+    const ModelInstance* source = object->instances[static_cast<size_t>(src_idx)];
+    std::vector<std::pair<int, int>> placed_items; // (object index, instance index), in `at` order
+    json                             created = json::array();
+    std::vector<int>                 new_objects;
+    const size_t                     first = move_source ? 1 : 0;
+    for (size_t k = first; k < at.size(); ++k) {
+        if (as == "instances") {
+            ModelInstance* copy = object->add_instance(*source);
+            place_instance_at(*object, *copy, world(k), turns[k]);
+            created.push_back(Ids::of(*copy));
+            placed_items.emplace_back(obj_idx, static_cast<int>(object->instances.size()) - 1);
+        } else {
+            // `object` stays valid: add_object appends to the vector of pointers.
+            ModelObject* copy = m.add_object(*object);
+            copy->clear_instances();
+            ModelInstance* inst = copy->add_instance(*source);
+            place_instance_at(*copy, *inst, world(k), turns[k]);
+            new_objects.push_back(static_cast<int>(m.objects.size()) - 1);
+            placed_items.emplace_back(new_objects.back(), 0);
+        }
+    }
+    if (move_source) {
+        place_instance_at(*object, *object->instances[static_cast<size_t>(src_idx)], world(0), turns[0]);
+        placed_items.insert(placed_items.begin(), {obj_idx, src_idx});
+    }
+    object->invalidate_bounding_box();
+    refresh_structure();
+    ctx.set_slice_invalidated();
+
+    // Where each instance ended up, from the plates' own records (as scene_get reports it).
+    json             placed = json::array();
+    std::vector<int> outside, elsewhere; // positions in `at`
+    for (size_t k = 0; k < placed_items.size(); ++k) {
+        const json inst = Scene::instance_json(placed_items[k].first, placed_items[k].second);
+        placed.push_back(json::object({{"id", inst["id"]}, {"plate", inst["plate"]}, {"outside_plate", inst["outside_plate"]}}));
+        // placed_items follows `at` order, so k is the index into `at`.
+        if (inst["outside_plate"].get<bool>())
+            outside.push_back(static_cast<int>(k));
+        else if (!inst["plate"].is_number() || inst["plate"].get<int>() - 1 != plate_idx)
+            elsewhere.push_back(static_cast<int>(k));
+    }
+    auto list = [](const std::vector<int>& v) { return json(v).dump(); };
+    if (!outside.empty())
+        ctx.note(std::to_string(outside.size()) + " of " + std::to_string(placed_items.size()) + " placed instance(s) are not wholly inside a plate " +
+                 "(outside_plate: true), at[] index " + list(outside) + ". They will not print as placed; move them (object_transform) "
+                 "or let object_arrange pack them.");
+    if (!elsewhere.empty())
+        ctx.note(std::to_string(elsewhere.size()) + " placed instance(s) landed on another plate than plate " + std::to_string(plate_idx + 1) +
+                 ", at[] index " + list(elsewhere) + "; centres are in the frame of `plate`. See `placed`.");
+
+    json out = json::object();
+    out["ok"] = true;
+    if (as == "instances") {
+        out["created"] = created;
+        out["changed"] = objects_json({obj_idx});
+    } else {
+        out["created"] = objects_json(new_objects);
+        if (move_source)
+            out["changed"] = objects_json({obj_idx});
+    }
+    out["placed"] = std::move(placed);
+    return out;
+}
+
 json object_duplicate(ToolContext& ctx)
 {
     Model&                     m = model();
     const std::vector<ItemRef> refs = Ids::items(ctx.args()["targets"], "targets");
+    if (ctx.has("at"))
+        return object_duplicate_at(ctx, refs, ctx.arg("as", "instances"));
+    for (const char* key : {"plate", "move_source"})
+        if (ctx.has(key))
+            fail("invalid_argument", std::string("`") + key + "` applies only with `at`.", "Give `at`: [{center: [x, y], rotate_z_deg?}, ...].");
     const int                  copies = ctx.arg<int>("copies", 1);
     const std::string          as = ctx.arg("as", "instances");
     const double               spacing = ctx.arg<double>("spacing", 5.);
@@ -1459,15 +1608,31 @@ MCP_TOOL_GROUP(Objects)
             "prime tower and earlier copies; nothing is rotated or packed. A copy that does not fit there (or of a source on no "
             "plate) is parked behind the plates, outside every plate (plate: null, outside_plate: true, with a note); never on "
             "another plate. object_arrange packs parked copies (scope \"all\", or scope \"plate\" with include_off_plate: true). "
+            "Explicit layout in one call: `at`: [{center: [x, y], rotate_z_deg?}, ...] makes one copy per entry of ONE source (an "
+            "instance, or an object with one instance) and centres copy k's bounding box on at[k].center, in the frame of `plate` "
+            "(default: the source's plate), as object_transform move_to.center; rotate_z_deg turns that copy about Z relative to "
+            "the source's rotation. move_source: true puts the source itself at at[0] (turned by its rotate_z_deg) and makes "
+            "len(at)-1 copies, so a whole plate layout is one call. With `at`, `copies` may be left out (else it must equal the "
+            "number of copies) and `spacing` is refused; nothing is moved out of the way, so positions are taken as given and an "
+            "instance not wholly on a plate is reported (outside_plate: true, with a note). "
             "Removing instances is `delete` with instance ids. One undo step. Returns `created` (instance ids, or new objects) and "
-            "`placed`: [{id, plate, outside_plate}] for every copy.";
+            "`placed`: [{id, plate, outside_plate}] for every copy (with `at`: every placed instance, the moved source first, in "
+            "`at` order).";
         tool.input_schema = Schema::parse(R"JSON({
             "type": "object",
             "properties": {
                 "targets": {"type": "array", "items": {"$ref": "#/$defs/Id"}, "minItems": 1},
                 "copies": {"type": "integer", "minimum": 1, "maximum": 200, "default": 1},
                 "as": {"enum": ["instances", "objects"], "default": "instances"},
-                "spacing": {"type": "number", "minimum": 0, "default": 5}
+                "spacing": {"type": "number", "minimum": 0, "default": 5},
+                "at": {"type": "array", "minItems": 1, "maxItems": 500,
+                    "description": "One entry per placed instance, in the plate frame of `plate`: bounding-box centre and Z turn (degrees, relative to the source).",
+                    "items": {"type": "object", "properties": {
+                        "center": {"$ref": "#/$defs/Vec2"},
+                        "rotate_z_deg": {"type": "number", "default": 0}},
+                        "required": ["center"], "additionalProperties": false}},
+                "plate": {"$ref": "#/$defs/PlateRef", "description": "With `at`: the plate whose frame `at` uses (default: the source's plate)."},
+                "move_source": {"type": "boolean", "default": false, "description": "With `at`: the source itself takes at[0]; len(at)-1 copies are made."}
             },
             "required": ["targets"],
             "additionalProperties": false})JSON", "object_duplicate");

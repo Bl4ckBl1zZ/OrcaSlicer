@@ -59,9 +59,16 @@ Result: `{"ok": true, "changed": [objects with new boxes and plate assignment], 
 | `copies` | 1..200 | 1 | |
 | `as` | `instances` \| `objects` | `instances` | Extra instances share mesh and settings; objects are independent copies. |
 | `spacing` | mm | 5 | Copies are laid out in rows next to the source, wrapping at the plate edge. |
+| `at` | `[{center: [x, y], rotate_z_deg?}]` | | Explicit layout: one copy per entry, its bounding-box centre on `center` (plate frame of `plate`, as `object_transform` `move_to.center`), turned about Z by `rotate_z_deg` relative to the source. One source only: an instance, or an object with one instance. |
+| `plate` | plate ref | source's plate | With `at`: the plate whose frame `at` uses. |
+| `move_source` | boolean | false | With `at`: the source itself moves to `at[0]` (turned by its `rotate_z_deg`) and `len(at) - 1` copies are made, so a whole plate layout is one call. |
 
-Copies that do not fit stay outside the plate; call `object_arrange`. Result: `created` (instance
-ids, or new objects) and `changed`. Errors: `invalid_argument`, `limit` (more than 500 copies).
+Without `at`, copies that do not fit stay outside the plate; call `object_arrange`. With `at`,
+positions are taken as given (nothing is moved out of the way); `copies` may be left out (else it
+must equal the number of copies made) and `spacing` is refused. Result: `created` (instance ids, or
+new objects), `changed`, and `placed`: `[{id, plate, outside_plate}]` for every placed instance (with
+`at`, in `at` order, the moved source first); instances not wholly on a plate get a note. One undo
+step. Errors: `invalid_argument`, `stale_id`, `plate_locked`, `limit` (more than 500 copies).
 
 ## delete
 

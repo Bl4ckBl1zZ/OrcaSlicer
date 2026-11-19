@@ -253,7 +253,7 @@ Transform objects (all their instances), instances, or parts. Steps run in this 
 
 ## object_duplicate
 
-Copy objects or instances `copies` times, as extra instances of the same object (as: "instances", default; they share mesh and settings) or as independent objects (as: "objects"). Each copy goes on the source's own plate, in the free spot nearest the source on a grid of source-sized cells `spacing` mm apart (default 5), clear of the plate's objects, the prime tower and earlier copies; nothing is rotated or packed. A copy that does not fit there (or of a source on no plate) is parked behind the plates, outside every plate (plate: null, outside_plate: true, with a note); never on another plate. object_arrange packs parked copies (scope "all", or scope "plate" with include_off_plate: true). Removing instances is `delete` with instance ids. One undo step. Returns `created` (instance ids, or new objects) and `placed`: [{id, plate, outside_plate}] for every copy.
+Copy objects or instances `copies` times, as extra instances of the same object (as: "instances", default; they share mesh and settings) or as independent objects (as: "objects"). Each copy goes on the source's own plate, in the free spot nearest the source on a grid of source-sized cells `spacing` mm apart (default 5), clear of the plate's objects, the prime tower and earlier copies; nothing is rotated or packed. A copy that does not fit there (or of a source on no plate) is parked behind the plates, outside every plate (plate: null, outside_plate: true, with a note); never on another plate. object_arrange packs parked copies (scope "all", or scope "plate" with include_off_plate: true). Explicit layout in one call: `at`: [{center: [x, y], rotate_z_deg?}, ...] makes one copy per entry of ONE source (an instance, or an object with one instance) and centres copy k's bounding box on at[k].center, in the frame of `plate` (default: the source's plate), as object_transform move_to.center; rotate_z_deg turns that copy about Z relative to the source's rotation. move_source: true puts the source itself at at[0] (turned by its rotate_z_deg) and makes len(at)-1 copies, so a whole plate layout is one call. With `at`, `copies` may be left out (else it must equal the number of copies) and `spacing` is refused; nothing is moved out of the way, so positions are taken as given and an instance not wholly on a plate is reported (outside_plate: true, with a note). Removing instances is `delete` with instance ids. One undo step. Returns `created` (instance ids, or new objects) and `placed`: [{id, plate, outside_plate}] for every copy (with `at`: every placed instance, the moved source first, in `at` order).
 
 | Argument | Type | |
 |---|---|---|
@@ -261,6 +261,9 @@ Copy objects or instances `copies` times, as extra instances of the same object 
 | `copies` | integer | 1..200, default `1` |
 | `as` | `instances` \| `objects` | default `"instances"` |
 | `spacing` | number | >= 0, default `5` |
+| `at` | object[] | One entry per placed instance, in the plate frame of `plate`: bounding-box centre and Z turn (degrees, relative to the source).; at least 1 |
+| `plate` | [PlateRef](#shared-types) | With `at`: the plate whose frame `at` uses (default: the source's plate). |
+| `move_source` | boolean | With `at`: the source itself takes at[0]; len(at)-1 copies are made.; default `false` |
 | `if_rev` | integer | Fail with conflict if the scene rev changed. |
 
 ## delete
