@@ -83,3 +83,15 @@ Projects, import/export, objects, plates (`tools-project.md`, `tools-objects.md`
 | `last_plate` | The only plate cannot be deleted. | Delete its objects instead. |
 | `limit` | Too many copies or plates. | Use fewer. |
 | `mesh_error` | A geometry operation produced nothing usable (no flat face, empty cut). | Check the arguments. |
+
+## Slice
+
+| Code | Meaning | What the agent should do |
+|---|---|---|
+| `not_sliced` | The plate has no valid slice result. `details.state` says why: `not_sliced`, `invalidated` (changed after the last slice), `invalid`, `failed`, `cancelled`, `empty`. | Call `slice` (fix the problems `plate_validate` lists first). |
+| `busy_slicing` | The plate (or, for `slice`, any plate) is being sliced right now. | Wait with `slice_status` (`wait_s`), or stop it with `slice_cancel`. |
+| `validation_failed` | The plate cannot be sliced; `details.errors` lists each problem with the `object` or setting `key` concerned and a `fix`. | Apply the fixes, then slice again. |
+| `nothing_to_slice` | No printable object on the plate (or on any plate for `"all"`). | Put an object on the plate or mark objects printable. |
+| `export_failed` | Writing the G-code or `.gcode.3mf` failed. | Check the folder; slice again if the sliced G-code is gone. |
+| `not_available` | The slice analysis module is not built into this version. | Use `slice_result`. |
+| `gl_unavailable` | No usable GL context for a preview picture. | Bring the OrcaSlicer window on screen and retry. |

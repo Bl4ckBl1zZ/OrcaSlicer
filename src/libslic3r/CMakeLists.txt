@@ -488,6 +488,10 @@ set(lisbslic3r_sources
     SlicesToTriangleMesh.hpp
     SlicingAdaptive.cpp
     SlicingAdaptive.hpp
+    SliceAnalysis.cpp
+    SliceAnalysis.hpp
+    SliceAnalysisJson.cpp
+    SliceAnalysisJson.hpp
     Slicing.cpp
     Slicing.hpp
     Support/BeltFloorContext.cpp
