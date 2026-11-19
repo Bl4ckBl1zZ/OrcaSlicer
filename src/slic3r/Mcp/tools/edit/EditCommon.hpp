@@ -67,8 +67,7 @@ bool main_loop_idle();
 // orient, mesh jobs running on a worker thread.
 void watch(std::function<bool()> poll);
 
-// Sets app_config keys for the duration of a scope and puts the old values back afterwards, without
-// leaving the configuration marked dirty when nothing else changed it.
+// Sets app_config keys for the duration of a scope and puts the old values back afterwards.
 class ScopedAppConfig
 {
 public:
@@ -82,7 +81,6 @@ public:
 private:
     struct Saved { std::string section, key, value; };
     std::vector<Saved> m_saved;
-    bool               m_was_dirty { false };
     bool               m_any { false };
 };
 
