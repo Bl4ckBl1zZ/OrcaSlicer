@@ -16,6 +16,7 @@
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/libslic3r.h"
 #include "slic3r/GUI/GUI_App.hpp"
+#include "slic3r/GUI/MainFrame.hpp"
 
 #include "McpDialogGuard.hpp"
 #include "McpDispatcher.hpp"
@@ -143,6 +144,10 @@ void Service::on_app_ready()
         m_env_endpoint_file = env("ORCA_MCP_ENDPOINT_FILE");
         const std::string debug = env("ORCA_MCP_DEBUG_TOOLS");
         m_debug_tools = debug == "1" || debug == "true";
+        // Test launches on a desktop somebody is using: get the window out of the way. By now
+        // OpenGL is initialised, and offscreen rendering does not need the window on screen.
+        if (env("ORCA_MCP_WINDOW") == "minimized" && wxGetApp().mainframe != nullptr)
+            wxGetApp().mainframe->Iconize(true);
     }
     apply_preferences();
 }
@@ -297,12 +302,22 @@ void Service::stop()
 void Service::write_endpoint_files()
 {
     const ServiceStatus current = status();
+    // The format the stdio bridge (orca-mcp-bridge) and the test harness read. "schema" is bumped
+    // when a member changes meaning; members may be added without a bump.
+    json versions = json::array();
+    for (const std::string& version : Protocol::modern_versions())
+        versions.push_back(version);
+    for (const std::string& version : Protocol::legacy_versions())
+        versions.push_back(version);
     json endpoint = json::object();
+    endpoint["schema"] = 1;
     endpoint["url"] = current.url;
     endpoint["port"] = current.port;
     endpoint["token"] = token();
     endpoint["pid"] = Slic3r::get_current_pid();
-    endpoint["version"] = SoftFever_VERSION;
+    endpoint["protocolVersions"] = std::move(versions);
+    endpoint["app"] = SLIC3R_APP_NAME;
+    endpoint["appVersion"] = SoftFever_VERSION;
     const std::string text = endpoint.dump(2) + "\n";
     if (!write_private_file(endpoint_file(), text))
         BOOST_LOG_TRIVIAL(error) << "MCP: cannot write " << endpoint_file().string();

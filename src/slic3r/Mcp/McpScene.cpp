@@ -97,8 +97,27 @@ json paint_json(const ModelObject& object)
 
 } // namespace
 
+static json point_json(const Vec2d& point)
+{
+    return json::array({Scene::round4(point.x()), Scene::round4(point.y())});
+}
+
 json config_value_json(const ConfigOption& option)
 {
+    // Strings and points are taken from the option itself: their serialised form escapes line
+    // breaks and writes points as "XxY", which is for files, not for readers.
+    switch (option.type()) {
+    case coString: return static_cast<const ConfigOptionString&>(option).value;
+    case coStrings: return static_cast<const ConfigOptionStrings&>(option).values;
+    case coPoint: return point_json(static_cast<const ConfigOptionPoint&>(option).value);
+    case coPoints: {
+        json out = json::array();
+        for (const Vec2d& point : static_cast<const ConfigOptionPoints&>(option).values)
+            out.push_back(point_json(point));
+        return out;
+    }
+    default: break;
+    }
     if (option.is_vector()) {
         const auto&    vector_option = static_cast<const ConfigOptionVectorBase&>(option);
         const auto     scalar_type = static_cast<ConfigOptionType>(static_cast<int>(option.type()) & ~static_cast<int>(coVectorType));
@@ -363,8 +382,10 @@ json printer_json()
     if (plates.get_plate_count() > 0) {
         const BoundingBoxf3 volume = plates.get_plate(0)->get_build_volume();
         const Vec3d         size = volume.size();
-        out["bed"] = json::array({round4(size.x()), round4(size.y())});
-        out["height"] = round4(size.z());
+        // The build volume is padded by a scene epsilon; report the nominal size.
+        auto nominal = [](double v) { return std::round(v * 100.) / 100.; };
+        out["bed"] = json::array({nominal(size.x()), nominal(size.y())});
+        out["height"] = nominal(size.z());
     }
     if (const auto* nozzles = preset.config.option<ConfigOptionFloats>("nozzle_diameter"); nozzles != nullptr) {
         out["extruders"] = nozzles->values.size();

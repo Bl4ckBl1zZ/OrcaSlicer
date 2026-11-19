@@ -17,10 +17,18 @@ void object(int obj_idx);
 void objects(const std::vector<int>& obj_idxs);
 
 // Full resynchronisation, what the application does after undo/redo replaced the whole model:
-// rebuilds the 3D scene, the object list and the plate assignment from the Model. Heavier but
-// always correct; use it after structural edits (objects, instances or volumes added, removed,
-// retyped or renamed) and whenever the targeted call is not obviously sufficient.
+// rebuilds the 3D scene and the object list from the Model and restarts the background process.
+// Use it after edits that keep the set of objects and instances as it is (volumes added, removed,
+// retyped or renamed; names, printable flags, filaments) and whenever the targeted call is not
+// obviously sufficient. It does NOT recompute which plate an instance is on: undo/redo restores
+// the plates itself, so the application's function leaves them alone.
 void full();
+
+// full(), preceded by recomputing plate membership for every instance from its position
+// (PartPlateList::reload_all_objects). Use it after structural edits that add, remove or reorder
+// objects or instances: the plates hold (object index, instance index) pairs, which such an edit
+// invalidates. Without it new instances show up under "off_plate" or on the wrong plate.
+void structure();
 
 } // namespace Refresh
 

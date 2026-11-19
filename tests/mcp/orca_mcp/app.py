@@ -98,22 +98,17 @@ class OrcaApp:
             "ORCA_MCP_PORT": str(self.port),  # 0 = any free port, reported in endpoint.json
             "ORCA_MCP_TOKEN": self.token,
             "ORCA_MCP_DEBUG_TOOLS": "1" if self.debug_tools else "0",
+            # The server minimises the window once the application is up, so that a test run does
+            # not get in the way of whoever is using the machine. Rendering works minimised.
+            "ORCA_MCP_WINDOW": self.window,
         })
         env.update(self.extra_env)
 
         args = [str(self.exe), "--datadir", str(self.data_dir)] + self.files
         flags = 0
-        startupinfo = None
-        if sys.platform == "win32":
-            if self.detached:
-                flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-            if self.window == "minimized":
-                # Ask for the main window to start minimised and not take the focus, so a test run
-                # does not get in the way of whoever is using the machine.
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 7  # SW_SHOWMINNOACTIVE
-        self.process = subprocess.Popen(args, env=env, cwd=str(self.exe.parent), creationflags=flags, startupinfo=startupinfo,
+        if self.detached and sys.platform == "win32":
+            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        self.process = subprocess.Popen(args, env=env, cwd=str(self.exe.parent), creationflags=flags,
                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                         start_new_session=self.detached and sys.platform != "win32")
         deadline = time.monotonic() + self.start_timeout
