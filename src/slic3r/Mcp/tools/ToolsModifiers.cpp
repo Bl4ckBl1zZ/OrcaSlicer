@@ -192,8 +192,9 @@ Shape make_shape(const json& shape, const BoundingBoxf3& world_box, const json& 
 {
     Shape out;
     if (shape.contains("file")) {
+        Files::Pin                    pin; // held while the file is read
         const boost::filesystem::path path =
-            Files::check_read(shape["file"].get<std::string>(), {".stl", ".obj", ".3mf", ".amf", ".step", ".stp", ".drc"}, "shape.file");
+            Files::check_read(shape["file"].get<std::string>(), {".stl", ".obj", ".3mf", ".amf", ".step", ".stp", ".drc"}, "shape.file", &pin);
         Model model;
         try {
             model = Model::read_from_file(path.string(), nullptr, nullptr, LoadStrategy::LoadModel);

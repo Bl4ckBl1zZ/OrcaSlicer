@@ -129,7 +129,9 @@ json debug_paint_3mf(ToolContext& ctx)
     Plater*                       plater = wxGetApp().plater();
     if (!plater->export_3mf_copy(target))
         fail("invalid_argument", "export_3mf_copy failed for " + target.generic_string());
-    Files::check_read(path, {".3mf"}, "path");
+    Files::verify_written(target, "path");
+    Files::Pin pin;
+    Files::check_read(path, {".3mf"}, "path", &pin);
 
     DynamicPrintConfig        config;
     ConfigSubstitutionContext substitutions(ForwardCompatibilitySubstitutionRule::Enable);

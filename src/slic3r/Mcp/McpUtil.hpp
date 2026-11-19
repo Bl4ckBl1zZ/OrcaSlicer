@@ -1,11 +1,17 @@
 #ifndef slic3r_Mcp_Util_hpp_
 #define slic3r_Mcp_Util_hpp_
 
-// Small dependency-free helpers shared by the MCP sources.
+// Small helpers shared by the MCP sources (standard library, plus libslic3r's locale-independent
+// number conversion).
 
 #include <cctype>
+#include <cmath>
 #include <cstddef>
+#include <locale>
+#include <sstream>
 #include <string>
+
+#include "libslic3r/LocalesUtils.hpp"
 
 #include "McpError.hpp"
 #include "McpJson.hpp"
@@ -117,6 +123,33 @@ inline void check_single_line(const std::string& text, const char* what)
                  std::string("`") + what + "` must not contain control characters (line breaks, tabs ...); found one at byte " + std::to_string(i) + ".",
                  "Use a single line of printable text.", json::object({{"argument", what}, {"position", i}}));
     }
+}
+
+// A decimal number written the classic way ("0.2", "-1.5e3"), whatever the process locale: std::strtod
+// and std::stod follow LC_NUMERIC, which wxLocale sets to the user's language, so under a decimal-comma
+// locale (German, French, ...) they read "0.2" as 0. The whole text must be the number (no spaces, no
+// leading '+'); infinities and NaN are refused.
+inline bool parse_number(const std::string& text, double& out)
+{
+    if (text.empty())
+        return false;
+    size_t       used = 0;
+    const double value = Slic3r::string_to_double_decimal_point(text, &used);
+    if (used != text.size() || !std::isfinite(value))
+        return false;
+    out = value;
+    return true;
+}
+
+// `value` with up to 15 significant digits and a decimal point whatever the locale (std::to_string and
+// printf("%f") write a comma under a decimal-comma locale).
+inline std::string number_to_text(double value)
+{
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out.precision(15);
+    out << value;
+    return out.str();
 }
 
 // Serialises without throwing on invalid UTF-8 (file names from odd sources): bad bytes become U+FFFD.

@@ -2,9 +2,13 @@
 // which listens on Streamable HTTP on 127.0.0.1. See docs/mcp/orca-mcp-bridge.md.
 #include "BridgeCommon.hpp"
 
+#include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <locale>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -62,15 +66,20 @@ const char *USAGE =
     "Exit codes: 0 stdin closed / signal, 1 internal error, 2 bad usage, 3 stdout closed,\n"
     "4 --check failed.\n";
 
+// "1.5" means 1.5 whatever the process locale (std::stod follows LC_NUMERIC). Classic-locale stream:
+// the whole argument must be a finite, non-negative number.
 bool parse_seconds(const std::string &s, double &out)
 {
-    try {
-        std::size_t pos = 0;
-        out             = std::stod(s, &pos);
-        return pos == s.size() && out >= 0;
-    } catch (const std::exception &) {
+    if (s.empty() || std::isspace(static_cast<unsigned char>(s.front())))
         return false;
-    }
+    std::istringstream in(s);
+    in.imbue(std::locale::classic());
+    double value = 0;
+    in >> value;
+    if (in.fail() || in.peek() != std::char_traits<char>::eof() || !std::isfinite(value) || value < 0)
+        return false;
+    out = value;
+    return true;
 }
 
 std::vector<std::string> utf8_args(int argc, char **argv)

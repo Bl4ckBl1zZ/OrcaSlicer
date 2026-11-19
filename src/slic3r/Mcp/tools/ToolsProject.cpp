@@ -34,6 +34,7 @@
 #include "../McpTool.hpp"
 #include "../McpUtil.hpp"
 #include "edit/EditCommon.hpp"
+#include "project/LoadGuard.hpp"
 #include "settings/PresetOps.hpp"
 #include "slice/SliceData.hpp"
 
@@ -65,6 +66,7 @@ void save_project_to(const fs::path& path)
     if (p.export_3mf(path, strategy) < 0)
         fail("export_failed", "Saving the project to " + path.generic_string() + " failed.",
              "Check that the folder exists and that no other program holds the file open.");
+    Files::verify_written(path, "path");
     Slic3r::remove_backup(p.model(), false);
     p.set_project_filename(from_path(path));
     p.up_to_date(true, false);
@@ -150,19 +152,6 @@ bool is_gcode_question(const DialogRecord& record)
     return contains_ci(record.title, "Modified G-code") || contains_ci(record.title, "Customized Preset");
 }
 
-// The post-processing scripts of the edited process preset, serialised; "" when there are none.
-std::string edited_post_process()
-{
-    const DynamicPrintConfig&  config  = PresetOps::collection(Preset::TYPE_PRINT).get_edited_preset().config;
-    const ConfigOptionStrings* scripts = config.option<ConfigOptionStrings>("post_process");
-    if (scripts == nullptr)
-        return {};
-    for (const std::string& script : scripts->values)
-        if (!script.empty())
-            return scripts->serialize();
-    return {};
-}
-
 // Back to an empty project after a load that was refused: the loaded objects, plates and embedded
 // presets go (new_project resets the project presets), and the preset edits the load left are dropped.
 void roll_back_load()
@@ -176,7 +165,9 @@ void roll_back_load()
 
 json project_open(ToolContext& ctx)
 {
-    const fs::path path = Files::check_read(ctx.arg("path", ""), {".3mf"}, "path");
+    // The pin keeps the checked file open (on Windows: unrenamable) until the load is done.
+    Files::Pin     pin;
+    const fs::path path = Files::check_read(ctx.arg("path", ""), {".3mf"}, "path", &pin);
     // Trusting a project's G-code is a G-code edit by the agent: it needs the same permission.
     const bool trust_gcode = ctx.arg<bool>("trust_embedded_gcode", false);
     if (trust_gcode && !wxGetApp().app_config->get_bool("mcp_allow_gcode_edit"))
@@ -210,30 +201,36 @@ json project_open(ToolContext& ctx)
     ScopedAppConfig app_config;
     if (!trust_gcode)
         app_config.set("no_warn_when_modified_gcodes", "false");
-    const std::string post_process_before = edited_post_process();
-    const size_t      dialogs_before      = ctx.dialogs().size();
+    // The user's presets before the load: what the project brings is compared with them.
+    const LoadGuard::Library library = LoadGuard::snapshot();
+    const size_t             dialogs_before = ctx.dialogs().size();
 
     // "<loadall>" skips the "open as project or import geometry" question.
     plater().load_project(from_path(path), "<loadall>");
     flush_pending_events();
 
     // Untrusted custom G-code: the application loads the presets anyway once its question is
-    // dismissed, so undo the load instead of leaving that G-code selected.
+    // dismissed, so undo the load instead of leaving that G-code selected. Its question relies on a
+    // list the file provides and is skipped for "published" projects, so the G-code in effect is also
+    // compared with the user's own presets (and plate custom G-code is looked at).
     if (!trust_gcode) {
         json questions = json::array();
         for (size_t i = dialogs_before; i < ctx.dialogs().size(); ++i)
             if (is_gcode_question(ctx.dialogs()[i]))
                 questions.push_back(to_json(ctx.dialogs()[i]));
-        if (!questions.empty()) {
+        const std::vector<LoadGuard::Finding> foreign = LoadGuard::foreign_code(library, model());
+        if (!questions.empty() || !foreign.empty()) {
             roll_back_load();
             ctx.accept_dialogs();
             ctx.set_slice_invalidated();
             fail("untrusted_gcode",
                  "The project " + path.generic_string() +
-                     " carries presets with custom G-code; it was not opened (the load was undone, leaving an empty project).",
-                 "Check the G-code the question lists (details.questions), then repeat with trust_embedded_gcode: true; that needs the "
-                 "user's \"Allow the agent to edit G-code settings\" preference (mcp_allow_gcode_edit).",
-                 json::object({{"path", path.generic_string()}, {"questions", questions}}));
+                     " carries custom G-code that the user's presets do not have; it was not opened (the load was undone, leaving an "
+                     "empty project).",
+                 "Check the G-code (details.settings lists where it is, details.questions quotes the application's question), then repeat "
+                 "with trust_embedded_gcode: true; that needs the user's \"Allow the agent to edit G-code settings\" preference "
+                 "(mcp_allow_gcode_edit).",
+                 json::object({{"path", path.generic_string()}, {"questions", questions}, {"settings", LoadGuard::to_json(foreign)}}));
         }
     }
     const std::vector<std::string> errors = error_dialog_texts(ctx);
@@ -257,23 +254,33 @@ json project_open(ToolContext& ctx)
             }
     if (reassigned > 0)
         Refresh::full();
-    // Post-processing scripts are programs that run on export; a project opened by the agent must not
-    // bring its own (trusted G-code or not). Scripts the user's process preset already had stay.
-    const std::string post_process_after = edited_post_process();
-    if (!post_process_after.empty() && post_process_after != post_process_before) {
-        try {
-            PresetOps::tab(Preset::TYPE_PRINT).apply_preset_config_values({{std::string("post_process"), std::string()}});
-        } catch (const std::exception& e) {
-            roll_back_load();
-            ctx.accept_dialogs();
-            ctx.set_slice_invalidated();
-            fail("internal",
-                 "The project " + path.generic_string() + " sets post-processing scripts that could not be removed (" + e.what() +
-                     "); it was not opened (the load was undone, leaving an empty project).",
-                 "Report it; the application log has the details.");
-        }
-        ctx.note("The project's process preset set post-processing scripts (post_process); they were removed, since a project opened "
-                 "through MCP never brings scripts that run on export. The removal shows as an unsaved edit of the process preset.");
+    // Post-processing scripts and plug-ins are programs, the printer's address and credentials go to
+    // the network: a project opened by the agent never brings its own (trusted G-code or not). They are
+    // put back to the user's values, in the presets the file brought too (so discarding the edits
+    // cannot restore them). The same options are dropped from per-object settings.
+    std::vector<LoadGuard::Finding> reset;
+    try {
+        reset = LoadGuard::reset_unsafe(library);
+        const std::vector<LoadGuard::Finding> stripped = LoadGuard::strip_model(model(), 0, trust_gcode);
+        reset.insert(reset.end(), stripped.begin(), stripped.end());
+    } catch (const std::exception& e) {
+        roll_back_load();
+        ctx.accept_dialogs();
+        ctx.set_slice_invalidated();
+        fail("internal",
+             "The project " + path.generic_string() + " sets scripts, plug-ins or printer connection settings that could not be removed (" +
+                 e.what() + "); it was not opened (the load was undone, leaving an empty project).",
+             "Report it; the application log has the details.");
+    }
+    if (!reset.empty()) {
+        std::string keys;
+        for (const LoadGuard::Finding& f : reset)
+            if (keys.find(f.key) == std::string::npos)
+                keys += (keys.empty() ? "" : ", ") + f.key;
+        ctx.note("The project set " + keys +
+                 " (post-processing scripts, plug-ins or the printer's connection); a project opened through MCP never brings those, so "
+                 "they were put back to the values of the user's own presets. Where the project's preset is selected, the change shows "
+                 "as an unsaved edit.");
     }
     if (!note.empty())
         ctx.note(note);
@@ -306,6 +313,7 @@ json project_save(ToolContext& ctx)
     if (copy) {
         if (!plater().export_3mf_copy(target))
             fail("export_failed", "Saving a copy to " + target.generic_string() + " failed.", "Check that the folder exists and the file is not open elsewhere.");
+        Files::verify_written(target, "path");
     } else
         save_project_to(target);
     flush_pending_events();
@@ -325,10 +333,11 @@ json project_save(ToolContext& ctx)
 json model_import(ToolContext& ctx)
 {
     const json& paths_arg = ctx.args()["paths"];
-    std::vector<fs::path> paths;
+    std::vector<fs::path>   paths;
+    std::vector<Files::Pin> pins(paths_arg.size()); // held until the files are loaded
     for (size_t i = 0; i < paths_arg.size(); ++i) {
         const std::string label = "paths[" + std::to_string(i) + "]";
-        paths.push_back(Files::check_read(paths_arg[i].get<std::string>(), Files::model_extensions(), label.c_str()));
+        paths.push_back(Files::check_read(paths_arg[i].get<std::string>(), Files::model_extensions(), label.c_str(), &pins[i]));
     }
     const std::string as        = ctx.arg("as", "objects");
     const std::string units     = ctx.arg("units", "auto");
@@ -357,9 +366,9 @@ json model_import(ToolContext& ctx)
     if (ctx.has("step")) {
         const json& step = ctx.args()["step"];
         if (step.contains("linear_deflection"))
-            app_config.set("linear_deflection", std::to_string(step["linear_deflection"].get<double>()));
+            app_config.set("linear_deflection", number_to_text(step["linear_deflection"].get<double>()));
         if (step.contains("angle_deflection"))
-            app_config.set("angle_deflection", std::to_string(step["angle_deflection"].get<double>()));
+            app_config.set("angle_deflection", number_to_text(step["angle_deflection"].get<double>()));
         if (step.contains("split_compound"))
             app_config.set("is_split_compound", step["split_compound"].get<bool>() ? "true" : "false");
     }
@@ -395,6 +404,14 @@ json model_import(ToolContext& ctx)
         }
     }
     std::vector<int> created = new_object_indices(before);
+    // A 3MF's per-object settings: never G-code, scripts, plug-ins or printer connection settings.
+    if (!created.empty()) {
+        const std::vector<LoadGuard::Finding> stripped =
+            LoadGuard::strip_model(model(), static_cast<size_t>(*std::min_element(created.begin(), created.end())), false);
+        if (!stripped.empty())
+            ctx.note("Removed per-object settings the imported file set (" + LoadGuard::to_json(stripped).dump() +
+                     "): an import never brings G-code, scripts, plug-ins or printer connection settings.");
+    }
 
     if (units == "m") {
         for (int idx : created) {
@@ -518,6 +535,7 @@ json export_file(ToolContext& ctx)
     const std::string path_arg = ctx.arg("path", "");
     json              files = json::array();
     auto              record = [&files](const fs::path& p) {
+        Files::verify_written(p, "path");
         files.push_back(json::object({{"path", p.generic_string()}, {"bytes", file_bytes(p)}}));
     };
 
@@ -612,10 +630,12 @@ MCP_TOOL_GROUP(Project)
         tool.title = "Open a 3MF project";
         tool.description =
             "Open a 3MF project, replacing the current one: objects, plates, per-plate settings and the presets stored in the project. "
-            "`on_unsaved` as in project_new; it also covers unsaved preset edits (fail lists them, discard/save drop them). Custom G-code embedded in the project's presets is accepted only with "
-            "trust_embedded_gcode: true, which needs the user's \"Allow the agent to edit G-code settings\" preference (else forbidden_key); "
-            "without it such a project fails with untrusted_gcode quoting the G-code question, and the load is undone (an empty project "
-            "remains). Post-processing scripts (post_process) a project brings are always removed (a note says so). Version notices are "
+            "`on_unsaved` as in project_new; it also covers unsaved preset edits (fail lists them, discard/save drop them). Custom G-code the "
+            "project brings that the user's presets do not have (in its presets, its settings or a plate's custom G-code) is accepted only "
+            "with trust_embedded_gcode: true, which needs the user's \"Allow the agent to edit G-code settings\" preference (else "
+            "forbidden_key); without it such a project fails with untrusted_gcode (details.settings lists where the G-code is), and the "
+            "load is undone (an empty project remains). Post-processing scripts, slicing plug-ins and printer connection settings a project "
+            "brings are always put back to the user's values (a note lists them). Version notices are "
             "returned in `dialogs`. To add only the geometry of a 3MF to the current project use model_import. Ids are new after this. "
             "Not undoable. Returns the scene summary.";
         tool.input_schema = Schema::parse(R"JSON({

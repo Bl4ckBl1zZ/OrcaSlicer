@@ -8,7 +8,6 @@
 #include <mutex>
 #include <set>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "libslic3r/AppConfig.hpp"
@@ -189,7 +188,8 @@ struct OrientState
     std::atomic<bool>                     done { false };
     std::atomic<int>                      percent { 0 };
     std::string                           error;
-    std::thread                           thread;
+    // boost::thread from Slic3r::create_thread: a 16 MB stack (std::thread gets 512 KB on macOS).
+    boost::thread                         thread;
 };
 
 } // namespace
@@ -261,7 +261,7 @@ json start_orient(ToolContext& ctx)
 
     auto job = Jobs::instance().start("orient", [state]() { state->cancel = true; });
     Jobs::instance().update(job, 0., "Orienting");
-    state->thread = std::thread([state, min_area]() {
+    state->thread = create_thread([state, min_area]() {
         set_current_thread_name("mcp_orient");
         try {
             orientation::OrientParams params;
@@ -363,7 +363,7 @@ struct MeshState
     std::atomic<bool>     cancel { false };
     std::atomic<bool>     done { false };
     std::atomic<int>      percent { 0 };
-    std::thread           thread;
+    boost::thread         thread; // Slic3r::create_thread: 16 MB stack
 };
 
 struct Cancelled {};
@@ -400,7 +400,7 @@ json start_mesh_job(ToolContext& ctx, const std::string& op, const std::vector<s
 
     auto job = Jobs::instance().start(op, [state]() { state->cancel = true; });
     Jobs::instance().update(job, 0., op == "simplify" ? "Simplifying" : "Repairing");
-    state->thread = std::thread([state]() {
+    state->thread = create_thread([state]() {
         set_current_thread_name("mcp_mesh");
         const size_t count = state->tasks.size();
         for (size_t k = 0; k < count && !state->cancel; ++k) {

@@ -9,6 +9,7 @@
 
 #include "libslic3r/BoundingBox.hpp"
 #include "libslic3r/Config.hpp"
+#include "libslic3r/LocalesUtils.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -32,14 +33,15 @@ std::string utf8(const wxString& text) { return std::string(text.utf8_str().data
 json scalar_from_text(ConfigOptionType type, const std::string& text)
 {
     switch (type) {
-    case coFloat: return std::strtod(text.c_str(), nullptr);
+    // Serialised with a decimal point; std::strtod would follow the user's locale (see parse_number).
+    case coFloat: return Slic3r::atof_decimal_point(text);
     case coInt: return std::atoi(text.c_str());
     case coBool: return text == "1" || text == "true";
     case coFloatOrPercent:
         // "15%" stays a string; an absolute value becomes a number.
         if (!text.empty() && text.back() == '%')
             return text;
-        return std::strtod(text.c_str(), nullptr);
+        return Slic3r::atof_decimal_point(text);
     default: return text; // strings, percents ("15%"), enums, points
     }
 }

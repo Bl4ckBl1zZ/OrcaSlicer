@@ -78,9 +78,22 @@ if (NOT _orca_mcp_bridge_standalone)
     set_target_properties(orca-mcp-bridge PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/src")
     if (APPLE AND CMAKE_MACOSX_BUNDLE AND TARGET OrcaSlicer)
         # macOS: inside OrcaSlicer.app/Contents/MacOS, so it ships (and installs) with the bundle.
+        # Copied after the app is linked (its bundle exists then and nothing rewrites the copy), and
+        # signed ad hoc in place: Apple Silicon does not run unsigned code, and a copy that lost the
+        # linker's signature would be killed on launch. Release signing (CI) re-signs every Mach-O of
+        # the bundle with the real identity afterwards.
+        add_dependencies(orca-mcp-bridge OrcaSlicer)
+        find_program(ORCA_CODESIGN codesign)
+        set(_bridge_in_bundle "$<TARGET_FILE_DIR:OrcaSlicer>/$<TARGET_FILE_NAME:orca-mcp-bridge>")
+        if (ORCA_CODESIGN)
+            set(_bridge_sign COMMAND "${ORCA_CODESIGN}" --force --sign - --timestamp=none "${_bridge_in_bundle}")
+        else ()
+            set(_bridge_sign "")
+        endif ()
         add_custom_command(TARGET orca-mcp-bridge POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:OrcaSlicer>"
             COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:orca-mcp-bridge>" "$<TARGET_FILE_DIR:OrcaSlicer>/"
+            ${_bridge_sign}
             VERBATIM)
     elseif (WIN32)
         install(TARGETS orca-mcp-bridge RUNTIME DESTINATION ".")

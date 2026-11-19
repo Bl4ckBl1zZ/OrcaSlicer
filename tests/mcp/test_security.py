@@ -209,6 +209,40 @@ def test_link_out_of_the_workspace_refused(sc, run_dir):
         remove_link(link)
 
 
+def test_hard_link_not_written_through(sc, run_dir):
+    """A hard link in the workspace to a file elsewhere: writing over it would change that file."""
+    ws = workspace(sc)
+    target = Path(run_dir) / "security_hard_link_target.3mf"
+    target.write_bytes(b"not yours")
+    link = ws / "hard_link.3mf"
+    link.unlink(missing_ok=True)
+    try:
+        os.link(target, link)
+    except OSError:
+        pytest.skip("cannot create a hard link here")
+    try:
+        sc.tool("project_new", on_unsaved="discard")
+        add_cube(sc)
+        refused(sc, "export_file", "hard_link", kind="3mf", path=str(link), overwrite=True)
+        refused(sc, "project_save", "hard_link", path=str(link), overwrite=True)
+        assert target.read_bytes() == b"not yours"
+    finally:
+        link.unlink(missing_ok=True)
+
+
+@windows_only
+def test_case_variant_of_the_workspace_accepted(sc):
+    """NTFS compares names without case: the workspace written in other case is the same folder."""
+    ws = workspace(sc)
+    variant = Path(str(ws).upper()) / "case_variant.3mf"
+    sc.tool("project_new", on_unsaved="discard")
+    add_cube(sc)
+    sc.tool("export_file", kind="3mf", path=str(variant), overwrite=True)
+    assert (ws / "case_variant.3mf").exists()
+    result = sc.call("project_open", {"path": str(variant).lower(), "on_unsaved": "discard"})
+    assert not result.is_error or result.error_code == "untrusted_gcode", result.data
+
+
 # ---------------------------------------------------------------------------------------------
 # Secrets
 # ---------------------------------------------------------------------------------------------

@@ -271,6 +271,20 @@ function relocate_python_runtime() {
     fi
 }
 
+# The MCP stdio bridge (src/mcp_bridge) lives next to the app's executable. Apple Silicon kills
+# unsigned code, and lipo or a copy can leave it without a valid signature, so it is (re)signed ad
+# hoc here when its signature does not verify; release signing replaces that with the real identity.
+function sign_mcp_bridge() {
+    local app="$1"
+    local bridge="$app/Contents/MacOS/orca-mcp-bridge"
+    [ -e "$bridge" ] || return 0  # built with -DORCA_MCP_BRIDGE=OFF
+    if ! codesign --verify --strict "$bridge" 2>/dev/null; then
+        echo "  Signing orca-mcp-bridge ad hoc in $(basename "$app")..."
+        codesign --force --sign - --timestamp=none "$bridge"
+    fi
+    codesign --verify --strict --verbose=2 "$bridge"
+}
+
 # --- Bundled Python runtime verification --------------------------------------
 # Relocation is handled at the source: deps/python3/python3.cmake stamps
 # libpython with an @rpath id and src/CMakeLists.txt gives the app a matching
@@ -377,7 +391,8 @@ function build_slicer() {
             find ./OrcaSlicer.app/ -name '.DS_Store' -delete
 
             verify_python_runtime ./OrcaSlicer.app
-            
+            sign_mcp_bridge ./OrcaSlicer.app
+
             # Copy OrcaSlicer_profile_validator.app if it exists
             if [ -f "../src$BUILD_DIR_CONFIG_SUBDIR/OrcaSlicer_profile_validator.app/Contents/MacOS/OrcaSlicer_profile_validator" ]; then
                 echo "Copying OrcaSlicer_profile_validator.app..."
@@ -442,6 +457,7 @@ function build_universal() {
     lipo_dir "$UNIVERSAL_APP" "$X86_64_APP"
     echo "Universal OrcaSlicer.app created at $UNIVERSAL_APP"
     verify_python_runtime "$UNIVERSAL_APP"
+    sign_mcp_bridge "$UNIVERSAL_APP"
 
     # Create universal binary for profile validator if it exists
     ARM64_VALIDATOR="$PROJECT_DIR/build/arm64/OrcaSlicer/OrcaSlicer_profile_validator.app"
