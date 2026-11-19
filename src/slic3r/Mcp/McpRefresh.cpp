@@ -2,6 +2,7 @@
 
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
+#include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Plater.hpp"
 
 namespace Slic3r { namespace GUI { namespace Mcp {
@@ -29,6 +30,12 @@ void full()
     // Force the background-process update, as Plater::priv::update_after_undo_redo does.
     plater->update(false, true);
     wxGetApp().obj_list()->update_after_undo_redo();
+}
+
+void structure()
+{
+    wxGetApp().plater()->get_partplate_list().reload_all_objects();
+    full();
 }
 
 } // namespace Refresh

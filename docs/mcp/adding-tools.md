@@ -119,8 +119,10 @@ A tool with `read_only == false` follows this order, as `object_update` does:
    functions called afterwards would take: one call is one undo step. Calling it again is a no-op.
 3. Change the `Model` (or call the GUI function that does).
 4. Refresh (`McpRefresh.hpp`): `Refresh::object(obj_idx)` after changing one object's transform,
-   mesh or per-object data; `Refresh::full()` after structural edits and whenever the targeted
-   call is not obviously enough. Call `ctx.set_slice_invalidated()` if a sliced result is no
+   mesh or per-object data; `Refresh::full()` after edits that keep the set of objects and
+   instances (volumes, names, flags) and whenever the targeted call is not obviously enough;
+   `Refresh::structure()` after adding, removing or reordering objects or instances (it also
+   recomputes which plate each instance is on). Call `ctx.set_slice_invalidated()` if a sliced result is no
    longer valid.
 5. Return `{"ok": true, "changed": ...}` with the affected subtree in `scene_get` shape, built
    with `Scene::object_json()`, `Scene::volume_json()`, `Scene::plate_json()` or, for tools that
