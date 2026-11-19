@@ -20,6 +20,7 @@
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Model.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
+#include "slic3r/GUI/MainFrame.hpp"
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Plater.hpp"
 
@@ -109,6 +110,16 @@ void merge(BoundingBoxf3& into, const BoundingBoxf3& b)
 {
     if (b.defined)
         into.merge(b);
+}
+
+// Float noise off the legend numbers (50.000003814697266 -> 50).
+void round_numbers(json& doc, int digits)
+{
+    if (doc.is_number_float())
+        doc = round_to(doc.get<double>(), digits);
+    else if (doc.is_structured())
+        for (json& v : doc)
+            round_numbers(v, digits);
 }
 
 json objects_in_view(const CameraView& cam, int plate_idx)
@@ -277,6 +288,17 @@ Picture render_preview(ToolContext& ctx, const ViewRequest& req)
         pr.camera.zoom = double(req.height) / cam.ortho_height;
     }
 
+    // The renderer's GL objects must go before the canvases (McpPreviewRenderer.hpp). Without a hook
+    // in GUI_App::shutdown, release them when the main window closes (a vetoed close only drops the cache).
+    static bool shutdown_bound = false;
+    if (!shutdown_bound && wxGetApp().mainframe != nullptr) {
+        wxGetApp().mainframe->Bind(wxEVT_CLOSE_WINDOW, [](wxCloseEvent& event) {
+            PreviewRenderer::instance().shutdown();
+            event.Skip();
+        });
+        shutdown_bound = true;
+    }
+
     const auto   start = std::chrono::steady_clock::now();
     PreviewImage img = PreviewRenderer::instance().render(pr);
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
@@ -295,6 +317,7 @@ Picture render_preview(ToolContext& ctx, const ViewRequest& req)
     info["plate"] = plate_idx + 1;
     info["camera"] = cam.to_json();
     info["legend"] = to_json(img.legend);
+    round_numbers(info["legend"], 3);
     info["objects_in_view"] = objects_in_view(cam, plate_idx);
     json details = to_json(img);
     for (const char* key : { "layers", "moves", "visible_box", "z_range" })

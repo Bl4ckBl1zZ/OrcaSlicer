@@ -412,3 +412,65 @@ def test_export_not_sliced(m, out_dir):
         assert err.code == "not_sliced"
     finally:
         m.tool("debug_slice_fixture", action="set", values={"layer_height": "0.2"})
+
+
+# ------------------------------------------------------------------------------------------------
+# End to end: load -> slice with progress -> results and checks -> pictures -> change -> re-slice
+# -> diff -> export -> the file says what the tools said.
+# ------------------------------------------------------------------------------------------------
+
+def test_end_to_end_scenario(launch_app, out_dir):
+    roots = ";".join(str(p) for p in (DATA, HANDY, out_dir))
+    app = launch_app("slice_e2e", files=[str(BENCHY)], extra_env={"ORCA_MCP_ROOTS": roots})
+    client = McpClient(app.url, app.token, era="modern", timeout=320).connect()
+    shots = out_dir / "e2e"
+    shots.mkdir(exist_ok=True)
+    try:
+        assert client.tool("plate_validate")["ok"] is True
+        r = client.call("slice", {"wait_s": 250}, progress=True)
+        assert not r.is_error and r.data["status"] == "finished", r.data
+        assert r.progress, "no progress streamed"
+        first = client.tool("slice_result", sections=["summary", "features", "filaments", "objects", "warnings"])
+        names = {t["name"] for t in client.list_tools()}
+        if "analyze" in names:
+            checks = client.tool("analyze", checks=["flow", "cooling", "overhangs", "supports", "first_layer", "seams"])
+            assert set(checks["verdicts"]) >= {"flow", "cooling", "overhangs"}
+            assert checks["overhangs"]["bridge_length_mm"] > 0  # Benchy's cabin roof and windows
+        tool = next(t for t in client.list_tools() if t["name"] == "screenshot")
+        if "preview" in tool["inputSchema"]["properties"]["view"]["enum"]:
+            for name, args in {
+                "iso_feature": {"camera": {"preset": "iso", "target": "objects"}},
+                "front_speed": {"camera": {"preset": "front", "target": "objects"}, "preview": {"color_by": "speed"}},
+                "top_section": {"camera": {"preset": "top", "target": "objects", "projection": "orthographic"},
+                                "preview": {"z_range": {"min": 9.9, "max": 10.1}, "section": True}},
+            }.items():
+                shot = client.call("screenshot", {"view": "preview", **args})
+                assert not shot.is_error, shot.data
+                (shots / f"{name}.png").write_bytes(shot.images[0][1])
+        # Change something, re-slice, ask what changed.
+        client.tool("debug_slice_fixture", action="set", values={"sparse_infill_density": "35%"})
+        assert client.tool("slice_status")["plates"][0]["state"] == "invalidated"
+        assert client.tool("slice", wait_s=250)["status"] == "finished"
+        second = client.tool("slice_result", sections=["summary", "filaments"])
+        assert second["summary"]["filament_g"] > first["summary"]["filament_g"]
+        if "analyze" in names:
+            diff = client.tool("analyze", checks=["diff"])["diff"]
+            assert diff["available"] and diff["after"]["weight_g"] > diff["before"]["weight_g"], diff
+        # Export and compare the file with the tools.
+        path = out_dir / "e2e_benchy.gcode"
+        e = client.tool("slice_export", kind="gcode", path=str(path), overwrite=True)
+        text = path.read_text(encoding="utf-8", errors="replace")
+        m_time = re.search(r"; estimated printing time \(normal mode\) = (.+)", text)
+        m_g = re.search(r"; total filament used \[g\] = ([\d.]+)", text) or re.search(r"; filament used \[g\] = ([\d.]+)", text)
+        assert m_time and m_g
+        assert abs(parse_hms(m_time.group(1)) - second["summary"]["time_s"]) <= 1.5
+        assert abs(float(m_g.group(1)) - second["summary"]["filament_g"]) <= 0.05
+        (out_dir / "e2e_numbers.json").write_text(__import__("json").dumps({
+            "tool_time_s": second["summary"]["time_s"], "file_time": m_time.group(1).strip(),
+            "tool_filament_g": second["summary"]["filament_g"], "file_filament_g": float(m_g.group(1)),
+            "layers": second["summary"]["layers"], "bytes": e["bytes"],
+            "first_filament_g": first["summary"]["filament_g"]}, indent=1), encoding="utf-8")
+        e3 = client.tool("slice_export", kind="gcode_3mf", path=str(out_dir / "e2e_benchy.gcode.3mf"), overwrite=True)
+        assert e3["bytes"] > e["bytes"] / 10
+    finally:
+        app.stop()

@@ -144,7 +144,11 @@ def test_lists_are_capped(c, sliced):
     obj = r["seams"]["objects"][0]
     if obj["count"] > 1:
         assert len(obj["samples"]) == 1
-        assert obj["samples_total"] > 1
+    # Lists the core does not limit itself are cut by the tool, with the full length next to them.
+    rows = c.tool("analyze", checks=["supports"], max_items=1)["supports"]
+    for key, value in rows.items():
+        if isinstance(value, list):
+            assert len(value) <= 1, key
 
 
 def test_region_query(c, sliced):
@@ -204,3 +208,41 @@ def test_bridge_with_and_without_supports(m):
         m.tool("debug_slice_fixture", action="set", values={"enable_support": "0"})
         m.tool("debug_slice_fixture", action="delete_object", object=obj)
         m.tool("debug_slice_fixture", action="move", object=cube[0], plate=1, offset=[0, 0])
+
+
+def test_two_filaments(m, out_dir):
+    require_core(m)
+    added = m.tool("debug_slice_fixture", action="add_filament")
+    assert added["filaments"] >= 2
+    loaded = m.tool("debug_slice_fixture", action="load", path=str(DATA / "pyramid.obj"))
+    pyramid = loaded["objects"][0]
+    scene = m.tool("scene_get")
+    cube = [o["id"] for p in scene["plates"] for o in p["objects"] if "cube" in o["name"].lower()][0]
+    try:
+        m.tool("debug_slice_fixture", action="move", object=pyramid, plate=1, offset=[40, 0])
+        m.tool("object_update", targets=[pyramid], filament=2)
+        r = m.tool("slice", wait_s=250)
+        assert r["status"] == "finished", r
+        res = m.tool("slice_result", sections=["summary", "filaments"])
+        slots = {f["filament"]: f for f in res["filaments"]}
+        assert {1, 2} <= set(slots), res["filaments"]
+        assert slots[2]["model_mm3"] > 0 and slots[1]["model_mm3"] > 0
+        assert res["summary"]["filament_changes"] > 0
+        mm = m.tool("analyze", checks=["multi_material"], max_items=5)["multi_material"]
+        assert mm["tool_changes"] > 0
+        assert mm["filaments"] and len(mm["filaments"]) >= 2
+        assert mm["transitions"][0]["layer"] >= 1
+        names = {t["name"] for t in m.list_tools()}
+        if "screenshot" in names:
+            shot = m.call("screenshot", {"view": "preview", "preview": {"color_by": "filament"},
+                                         "camera": {"preset": "iso", "target": "objects"}})
+            if not shot.is_error:
+                (out_dir / "preview").mkdir(exist_ok=True)
+                (out_dir / "preview" / "two_filaments.png").write_bytes(shot.images[0][1])
+                (out_dir / "preview" / "two_filaments.json").write_text(__import__("json").dumps(shot.data, indent=1), encoding="utf-8")
+                keys = {i["key"] for i in shot.data["legend"]["items"]}
+                assert len(keys) >= 2, shot.data["legend"]
+                colours = {i["color"] for i in shot.data["legend"]["items"]}
+                assert len(colours) >= 2, shot.data["legend"]
+    finally:
+        m.tool("debug_slice_fixture", action="delete_object", object=pyramid)

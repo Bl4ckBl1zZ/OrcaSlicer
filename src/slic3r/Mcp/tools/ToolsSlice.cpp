@@ -398,6 +398,10 @@ json debug_slice_fixture(ToolContext& ctx)
         ctx.snapshot("debug delete");
         plater().delete_object_from_model(static_cast<size_t>(ref.obj_idx));
         Refresh::full();
+    } else if (action == "add_filament") {
+        // The sidebar's "+" button.
+        plater().sidebar().add_filament();
+        out["filaments"] = Ids::filament_count();
     } else if (action == "viewer_state") {
         // The window's own G-code preview, to show that offscreen pictures leave it alone.
         GLCanvas3D* canvas = plater().get_preview_canvas3D();
@@ -549,7 +553,7 @@ MCP_TOOL_GROUP(Slice)
         tool.input_schema = Schema::parse(R"JSON({
             "type": "object",
             "properties": {
-                "action": {"enum": ["add_plate", "delete_plate", "move", "set", "load", "delete_object", "viewer_state"]},
+                "action": {"enum": ["add_plate", "delete_plate", "move", "set", "load", "delete_object", "add_filament", "viewer_state"]},
                 "object": {"$ref": "#/$defs/Id"},
                 "plate": {"$ref": "#/$defs/PlateRef"},
                 "offset": {"type": "array", "items": {"type": "number"}},
