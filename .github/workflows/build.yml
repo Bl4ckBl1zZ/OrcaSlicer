@@ -244,8 +244,11 @@ jobs:
           if ($hash -ne $env:CCACHE_SHA256) { throw "$name.zip has SHA-256 $hash, not the pinned one." }
           Expand-Archive -LiteralPath $zip -DestinationPath $env:RUNNER_TEMP -Force
           $bin = Join-Path $env:RUNNER_TEMP $name
-          & (Join-Path $bin 'ccache.exe') --version | Select-Object -First 1
+          # Captured first: piping it into Select-Object -First 1 closes the pipe early and
+          # ccache then exits with an error.
+          $version = & (Join-Path $bin 'ccache.exe') --version
           if ($LASTEXITCODE -ne 0) { throw 'ccache does not start.' }
+          $version | Select-Object -First 1
           Add-Content -Path $env:GITHUB_PATH -Value $bin
           Add-Content -Path $env:GITHUB_ENV -Value "CCACHE_ENTRY=ccache-$env:CCACHE_LEG-$env:CCACHE_RUN"
           # Read by build_win.bat and handed to the slicer's configure. No debug information:
@@ -272,7 +275,9 @@ jobs:
         shell: pwsh
         run: |
           if (Get-Command ccache -ErrorAction SilentlyContinue) { ccache -z }
-          .\build_win.bat -s -i -x
+          # One compiler per logical processor. Ninja's default of two more would only add
+          # memory pressure: the private-repository runner has 2 of them and 8 GB.
+          .\build_win.bat -s -i -x -j $env:NUMBER_OF_PROCESSORS
 
       - name: Compiler cache statistics
         if: ${{ always() && steps.ccache.outcome == 'success' }}
