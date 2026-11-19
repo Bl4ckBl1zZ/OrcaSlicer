@@ -162,6 +162,19 @@ json vec3(double x, double y, double z)
     return json::array({round4(x), round4(y), round4(z)});
 }
 
+// Euler XYZ rotation (radians) in degrees. A turn about Z only can come out of arrange as [180, -180, a]; report it as
+// [0, 0, a'] so a reader sees a plain turn on the bed.
+static json rotation_json(const Vec3d& rotation)
+{
+    const Eigen::Matrix3d m = (Eigen::AngleAxisd(rotation.z(), Vec3d::UnitZ()) * Eigen::AngleAxisd(rotation.y(), Vec3d::UnitY()) *
+                               Eigen::AngleAxisd(rotation.x(), Vec3d::UnitX()))
+                                  .toRotationMatrix();
+    if (std::abs(rotation.x()) > 1e-9 || std::abs(rotation.y()) > 1e-9)
+        if (std::abs(m(2, 2) - 1.) < 1e-9)
+            return vec3(0., 0., std::atan2(m(1, 0), m(0, 0)) * RAD_TO_DEG);
+    return vec3(rotation.x() * RAD_TO_DEG, rotation.y() * RAD_TO_DEG, rotation.z() * RAD_TO_DEG);
+}
+
 Detail detail_from(const std::string& name)
 {
     if (name == "summary") return Detail::Summary;
@@ -269,7 +282,7 @@ json instance_json(int obj_idx, int inst_idx, Detail detail)
         out["plate"] = nullptr;
     out["center"] = json::array({round4(center.x()), round4(center.y())});
     out["z_min"] = round4(box.min.z());
-    out["rotation"] = vec3(rotation.x() * RAD_TO_DEG, rotation.y() * RAD_TO_DEG, rotation.z() * RAD_TO_DEG);
+    out["rotation"] = rotation_json(rotation);
     out["scale"] = vec3(scale.x(), scale.y(), scale.z());
     if (mirror.x() < 0 || mirror.y() < 0 || mirror.z() < 0)
         out["mirror"] = vec3(mirror.x(), mirror.y(), mirror.z());

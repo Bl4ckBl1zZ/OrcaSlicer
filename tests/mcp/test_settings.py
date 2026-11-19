@@ -73,6 +73,8 @@ def test_search_marks_keys_the_agent_may_not_write(client):
     assert entry("printhost_apikey")["write"].startswith("refused")
     assert "G-code" in entry("machine_start_gcode")["write"]
     assert "write" not in entry("layer_height")
+    # A switch whose name ends in _gcode is not G-code text.
+    assert "write" not in entry("emit_machine_limits_to_gcode")
 
 
 # ---------------------------------------------------------------------------------------------

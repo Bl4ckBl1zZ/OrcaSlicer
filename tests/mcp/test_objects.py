@@ -338,10 +338,22 @@ def test_arrange_plate(ec):
     assert len(boxes) == 4
     assert not any(overlaps(boxes[i], boxes[j]) for i in range(4) for j in range(i + 1, 4))
     assert all(p["plate"] == 1 for p in result["result"]["placements"])
+    assert result["result"]["settings_used"]["spacing"] == 4
     names = ec.tool("history")["undo"]
     assert names[0].startswith("MCP: arrange plate 1")
     undo(ec)
     assert normalized(scene(ec)) == before
+
+
+def test_arrange_without_rotation_turns_nothing(ec):
+    # A long bar: the BBL align-to-Y default would turn it; allow_rotation false keeps every part as it is.
+    bar = ec.tool("object_add_primitive", shape="cube", size=[60, 10, 5])["created"][0]
+    ec.tool("object_transform", targets=[bar["id"]], rotate={"axis": "z", "angle_deg": 30})
+    result = wait_job(ec, ec.tool("object_arrange", allow_rotation=False, wait_s=60))
+    used = result["result"]["settings_used"]
+    assert used["allow_rotation"] is False and used["align_to_y"] is False
+    rotation = result["result"]["placements"][0]["rotation"]
+    assert rotation[0] == 0 and rotation[1] == 0 and abs(rotation[2] - 30) < 0.01, rotation
 
 
 def test_arrange_errors(ec):

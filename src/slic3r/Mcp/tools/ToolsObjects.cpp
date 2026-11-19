@@ -1417,10 +1417,13 @@ MCP_TOOL_GROUP(Objects)
         tool.title = "Arrange objects on plates";
         tool.description =
             "Auto-arrange the objects of one plate (scope \"plate\", default the current plate) or of all plates (scope \"all\"; may "
-            "add plates), with the arrange settings of the GUI for this call: spacing (mm, 0 = automatic), allow_rotation, "
-            "multi_material_same_plate, avoid_calibration_region, align_to_y. Locked plates are left alone (plate_locked when the "
-            "chosen plate is locked). Runs as a job: answers when done or after wait_s with {status: running, job}; poll job_status, "
-            "stop with job_cancel. One undo step. The finished job's result lists every instance's plate, centre and rotation.";
+            "add plates). The arrange settings you pass override the GUI's arrange settings for this call; omitted ones keep the "
+            "GUI's: spacing (mm, 0 = automatic), allow_rotation (turn parts to pack tighter), multi_material_same_plate, "
+            "avoid_calibration_region, align_to_y (turn each part so its longest side runs along Y; the GUI has it on for BBL "
+            "printers, so parts get turned unless you pass false). allow_rotation false without align_to_y also switches align_to_y "
+            "off, so nothing turns. Locked plates are left alone (plate_locked when the chosen plate is locked). Runs as a job: "
+            "answers when done or after wait_s with {status: running, job}; poll job_status, stop with job_cancel. One undo step. "
+            "The finished job's result has settings_used and lists every instance's plate, centre and rotation.";
         tool.input_schema = Schema::parse(R"JSON({
             "type": "object",
             "properties": {

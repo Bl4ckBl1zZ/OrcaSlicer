@@ -117,6 +117,13 @@ json start_arrange(ToolContext& ctx)
         settings.avoid_extrusion_cali_region = ctx.arg<bool>("avoid_calibration_region", true);
     if (ctx.has("align_to_y"))
         settings.align_to_y_axis = ctx.arg<bool>("align_to_y", false);
+    else if (ctx.has("allow_rotation") && !ctx.arg<bool>("allow_rotation", false))
+        settings.align_to_y_axis = false; // "no rotation" means no turn at all, also not the align-to-Y turn (on for BBL printers)
+    const json settings_used = {{"spacing", settings.distance},
+                                {"allow_rotation", settings.enable_rotation},
+                                {"multi_material_same_plate", settings.allow_multi_materials_on_same_plate},
+                                {"avoid_calibration_region", settings.avoid_extrusion_cali_region},
+                                {"align_to_y", settings.align_to_y_axis}};
 
     const int prev_state = p.get_prepare_state();
     const int prev_plate = list.get_curr_plate_index();
@@ -133,7 +140,7 @@ json start_arrange(ToolContext& ctx)
         plater().get_ui_job_worker().cancel();
     });
     Jobs::instance().update(job, 0., "Arranging");
-    watch([job, cancelled, saved, prev_state, prev_plate, plate_idx, scope]() {
+    watch([job, cancelled, saved, settings_used, prev_state, prev_plate, plate_idx, scope]() {
         if (job->state != Job::State::Running)
             return true;
         Plater& pl = plater();
@@ -153,6 +160,7 @@ json start_arrange(ToolContext& ctx)
         if (scope == "plate")
             result["plate"] = plate_idx + 1;
         result["plates"] = plates().get_plate_count();
+        result["settings_used"] = settings_used;
         result["placements"] = placements(only);
         Jobs::instance().finish(job, *cancelled ? Job::State::Cancelled : Job::State::Finished, result);
         return true;

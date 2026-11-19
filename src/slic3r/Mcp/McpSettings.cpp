@@ -376,7 +376,10 @@ std::string write_refusal(const std::string& key)
         return "it holds the printer's address or credentials";
     if (def != nullptr && def->is_plugin_backed())
         return "choosing a plug-in can install software";
-    if (def != nullptr && (def->is_code || (key.size() > 6 && key.compare(key.size() - 6, 6, "_gcode") == 0))) {
+    // G-code text: options marked as code, and text options named *_gcode. Bools such as emit_machine_limits_to_gcode or
+    // high_precision_gcode only switch a feature and are not G-code text.
+    const bool is_text = def != nullptr && (def->type == coString || def->type == coStrings);
+    if (def != nullptr && (def->is_code || (is_text && key.size() > 6 && key.compare(key.size() - 6, 6, "_gcode") == 0))) {
         const AppConfig* config = wxGetApp().app_config;
         if (config == nullptr || !config->get_bool("mcp_allow_gcode_edit"))
             return "it is G-code text, and editing G-code is switched off in Preferences > MCP server";
