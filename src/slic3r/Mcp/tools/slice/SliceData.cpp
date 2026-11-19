@@ -656,10 +656,11 @@ json result_json(int plate_idx, const std::set<std::string>& sections, const std
             if (matches == 1)
                 j["id"] = Ids::of(*match);
             const auto total = om.total();
-            j["weight_g"] = round_to(total.mass, 2);
+            // ObjectMass is in mg (mm³ at g/cm³), as GCodeStatistics notes.
+            j["weight_g"] = round_to(0.001 * total.mass, 2);
             j["volume_mm3"] = round_to(total.volume, 1);
             if (k < r.support_masses.size())
-                j["support_g"] = round_to(r.support_masses[k].total().mass, 2);
+                j["support_g"] = round_to(0.001 * r.support_masses[k].total().mass, 2);
             BoundingBoxf3 b = om.box;
             if (b.defined) {
                 b.min -= origin; b.max -= origin;

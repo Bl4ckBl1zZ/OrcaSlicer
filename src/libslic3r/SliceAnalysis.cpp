@@ -799,10 +799,10 @@ MoveAnalysis::MoveAnalysis(const GCodeProcessorResult &result, const Print *prin
             o.instance = nit->second.second;
             for (const auto &om : result.object_masses)
                 if (om.name == o.name && om.instance == o.instance)
-                    o.mass_g = om.total().mass;
+                    o.mass_g = 0.001 * om.total().mass; // ObjectMass is in mg (mm³ at g/cm³)
             for (const auto &om : result.support_masses)
                 if (om.name == o.name && om.instance == o.instance)
-                    o.support_mass_g = om.total().mass;
+                    o.support_mass_g = 0.001 * om.total().mass;
         }
         s.objects.push_back(o);
     }

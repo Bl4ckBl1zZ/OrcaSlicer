@@ -209,7 +209,8 @@ def test_slice_result_sections(c):
     keys = {f["key"] for f in r["features"]}
     assert {"outer_wall", "inner_wall"} <= keys, keys
     assert abs(sum(f["percent"] for f in r["features"]) - 100) < 25
-    assert r["objects"] and r["objects"][0]["weight_g"] > 0
+    # Grams, like the totals (the per-object masses come in mg): a part of the plate's filament.
+    assert r["objects"] and 0 < r["objects"][0]["weight_g"] <= s["filament_g"] + 0.05, r["objects"]
     box = s["toolpath_box"]
     assert box["max"][2] <= 20.05
     assert isinstance(r["warnings"], list)

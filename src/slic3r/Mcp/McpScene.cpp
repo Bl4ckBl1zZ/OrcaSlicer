@@ -276,7 +276,13 @@ json instance_json(int obj_idx, int inst_idx, Detail detail)
     out["bbox"] = bbox_json(box);
     if (!instance.printable)
         out["printable"] = false;
-    out["outside_plate"] = instance.print_volume_state != ModelInstancePVS_Inside;
+    // The plate's own record, as plate_validate and slicing use it. ModelInstance::print_volume_state
+    // is checked against the first plate's volume only and lags behind moves and arranges.
+    bool outside = true;
+    if (plate_idx >= 0)
+        if (PartPlate* plate = plater().get_partplate_list().get_plate(plate_idx); plate != nullptr)
+            outside = !plate->contain_instance_totally(obj_idx, inst_idx);
+    out["outside_plate"] = outside;
     if (detail == Detail::Full) {
         const Vec3d offset = instance.get_offset();
         out["offset_world"] = vec3(offset.x(), offset.y(), offset.z());
