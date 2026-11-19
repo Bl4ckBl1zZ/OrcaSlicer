@@ -198,6 +198,7 @@ def t_app(launch_app, models):
 def logo_app(launch_app, models):
     app, clients = start(launch_app, "paint_logo", models["logo"])
     clients["modern"].tool("debug_paint_fixture", op="add_filament", count=1)
+    clients["modern"].tool("debug_paint_fixture", op="filament_color", count=2, color="#FFFFFF")
     return app, clients
 
 
@@ -236,6 +237,18 @@ def test_scenario_supports_only_where_needed(t_app, era):
     r = c.tool("paint_apply", targets=[oid], channel="support", state="block", resolution_mm=0.2,
                selector={"box": {"min": [cx - 21, cy - 6, z0 + 19], "max": [cx - 5.5, cy + 6, z0 + 26]}})
     assert r["parts"][0]["after"]["block"]["area_mm2"] == pytest.approx(485.0, rel=0.01)
+
+    # The picture: enforcer green under the right arm, blocker red around the left arm.
+    from orca_mcp.png import close_to, hex_color, read_png
+    shot = c.call("screenshot", {"camera": {"azimuth_deg": 20, "elevation_deg": -25, "target": [oid]}, "size": {"width": 800, "height": 600},
+                                 "editor": {"overlay": "support_paint", "show_bed": False}})
+    assert not shot.is_error, shot.data
+    (app.data_dir.parent / "out").mkdir(exist_ok=True)
+    (app.data_dir.parent / "out" / f"paint_t_supports_{era}.png").write_bytes(shot.images[0][1])
+    image, states = read_png(shot.images[0][1]), shot.data["legend"]["overlay"]["states"]
+    green = image.bounding_box(close_to(hex_color(states["enforce"]), 6))
+    red = image.bounding_box(close_to(hex_color(states["block"]), 6))
+    assert green and red and green[0] > red[2], (green, red)  # enforcers right of the blockers in the picture
 
     # Manual supports: support only under the right arm.
     support = [m for m in slice_to(c, app, f"t_manual_{era}", **manual) if is_support(m["role"])]
@@ -299,6 +312,24 @@ def test_scenario_logo_in_white(logo_app, era):
     assert r["parts"][0]["after"]["filament_2"]["area_mm2"] == pytest.approx(72.0 + 2 * (12 + 6) * 1.15, rel=0.01)
     scene_obj = only_object(c)
     assert scene_obj["paint"]["color"] is True
+
+    # The colour shows in the normal editor view (no overlay): seen from the top, the logo's top face
+    # in filament 2's colour, 12 x 6 mm at the camera's scale.
+    from orca_mcp.png import close_to, hex_color, read_png
+    shot = c.call("screenshot", {"camera": {"preset": "top", "projection": "orthographic", "target": [oid]},
+                                 "size": {"width": 600, "height": 600}, "editor": {"show_bed": False}})
+    assert not shot.is_error, shot.data
+    png = shot.images[0][1]
+    (app.data_dir.parent / "out").mkdir(exist_ok=True)
+    (app.data_dir.parent / "out" / f"paint_logo_top_{era}.png").write_bytes(png)
+    image, info = read_png(png), shot.data
+    second = hex_color(c.tool("scene_get")["filaments"][1]["color"])
+    ppmm = info["camera"]["height"] / info["camera"]["ortho_height"]
+    assert second == (255, 255, 255)
+    background = close_to(hex_color(info["legend"]["background"]), 4)
+    assert image.count(lambda px: min(px) > 200 and not background(px)) == pytest.approx(72 * ppmm ** 2, rel=0.06)
+    iso = c.call("screenshot", {"camera": {"preset": "iso", "target": [oid]}, "size": {"width": 800, "height": 600}})
+    (app.data_dir.parent / "out" / f"paint_logo_iso_{era}.png").write_bytes(iso.images[0][1])
 
     # Filament 2 is printed only in the logo's layers, and only inside the logo's outline.
     moves = slice_to(c, app, f"logo_{era}")

@@ -204,6 +204,18 @@ json debug_paint_fixture(ToolContext& ctx)
         out["filaments"] = Ids::filament_count();
         return out;
     }
+    if (op == "filament_color") {
+        // As the sidebar's colour picker stores it: the project's filament_colour (test only, no journal).
+        const int slot = args.value("count", 1);
+        auto* colors = wxGetApp().preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
+        if (colors == nullptr || slot < 1 || slot > static_cast<int>(colors->values.size()))
+            fail("invalid_argument", "no such filament slot");
+        colors->values[static_cast<size_t>(slot - 1)] = args.value("color", std::string("#FFFFFF"));
+        plater->update_filament_colors_in_full_config();
+        plater->get_view3D_canvas3D()->set_as_dirty();
+        out["colors"] = colors->values;
+        return out;
+    }
     const ObjectRef ref = Ids::object(args["object"].get<std::string>(), "object");
     if (op == "transform") {
         ctx.snapshot("test transform " + Ids::of(*ref.object));
@@ -339,12 +351,13 @@ void register_debug_tools(ToolRegistry& registry)
         ToolDef tool;
         tool.name = "debug_paint_fixture";
         tool.title = "Paint test fixtures (test)";
-        tool.description = "Test only. op add_filament (count), transform (object, rotation_deg, scale, mirror [+-1,..] of instance 0), "
+        tool.description = "Test only. op add_filament (count), filament_color (count = slot, color), transform (object, rotation_deg, scale, mirror [+-1,..] of instance 0), "
                            "add_instance (object, offset), add_modifier (object, size), add_part (object, size, offset).";
         tool.input_schema = Schema::parse(R"JSON({
             "type": "object",
             "properties": {
-                "op": {"enum": ["add_filament", "transform", "add_instance", "add_modifier", "add_part"]},
+                "op": {"enum": ["add_filament", "filament_color", "transform", "add_instance", "add_modifier", "add_part"]},
+                "color": {"$ref": "#/$defs/Color"},
                 "object": {"$ref": "#/$defs/Id"},
                 "count": {"type": "integer", "minimum": 1, "maximum": 8},
                 "rotation_deg": {"$ref": "#/$defs/Vec3"}, "scale": {"$ref": "#/$defs/Vec3"}, "mirror": {"$ref": "#/$defs/Vec3"},
