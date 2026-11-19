@@ -35,7 +35,6 @@ namespace {
 const char* const ENDPOINT_PATH = "/mcp";
 const auto        TICK = std::chrono::milliseconds(250);
 const auto        IDLE_TIMEOUT = std::chrono::seconds(120);     // keep-alive connection with no request
-const auto        REQUEST_TIMEOUT = std::chrono::seconds(30);   // a request that never completes
 const auto        KEEPALIVE_COMMENT = std::chrono::seconds(15); // event streams
 const auto        PROGRESS_INTERVAL = std::chrono::milliseconds(1000);
 

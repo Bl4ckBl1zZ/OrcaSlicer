@@ -21,6 +21,7 @@ Preferences > General > **MCP server (AI agent control)**:
 | Enable MCP server | Starts or stops the server at once; no restart needed. |
 | Port | TCP port on `127.0.0.1`, default `13720`. If the port is taken the server does not start and the status line says so; it never picks another port, because client configurations hold the address. |
 | Status | `Listening on http://127.0.0.1:13720/mcp`, `Stopped`, or the reason it is not running. |
+| Allow the agent to edit G-code settings | Off by default. G-code text settings can be read but not changed unless this is on (`mcp_allow_gcode_edit`). |
 | Connect Claude Code > Copy command | Copies the `claude mcp add ...` command, including the token. |
 | Client configuration > Copy JSON | Copies a `.mcp.json` entry, including the token. |
 | Access token > Copy token | Copies the token alone. |
@@ -140,7 +141,8 @@ One reference page per tool group:
 | Settings | `settings_search`, `settings_get`, `preset_list`, `filament_list` | [tools-settings.md](tools-settings.md) |
 | View | `screenshot` | [tools-view.md](tools-view.md) |
 
-`tools/list` is the authority on what a build offers.
+[tools.md](tools.md) is the complete reference, generated from the registry
+(`tests/mcp/gen_tool_reference.py`); `tools/list` is the authority on what a build offers.
 
 ## Build and environment
 

@@ -207,8 +207,9 @@ std::string Dispatcher::blocked_reason(const ToolDef& tool, LoopState state) con
     case LoopState::Yielding: return "OrcaSlicer is in the middle of an operation";
     case LoopState::Nested: return "a menu or drag operation is in progress";
     case LoopState::UserDialog:
-        // Looking is allowed while a dialog is up; changing things under it is not.
-        if (tool.read_only)
+        // Looking is allowed while a dialog is up; changing things under it is not. Tools that
+        // declared they do not need an idle UI (stopping a job) run as well.
+        if (tool.read_only || !tool.requires_idle_ui)
             return {};
         return "a dialog is open in OrcaSlicer: " + m_guard.user_dialog_title();
     case LoopState::TopLevel: break;

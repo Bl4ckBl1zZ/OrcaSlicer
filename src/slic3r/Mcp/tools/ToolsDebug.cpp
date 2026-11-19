@@ -7,8 +7,12 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <wx/app.h>
+#include <wx/dialog.h>
+#include <wx/scrolwin.h>
+#include <wx/window.h>
 #include <wx/msgdlg.h>
 #include <wx/timer.h>
 #include <wx/utils.h>
@@ -276,6 +280,32 @@ json debug_window(ToolContext& ctx)
         frame->select_tab(wxString(TAB_ID_PREVIEW));
     else if (action == "prepare")
         frame->select_tab(wxString(TAB_ID_PREPARE));
+    else if (action == "preferences")
+        // As the user would: a modal dialog opened from the event loop, outside any call.
+        RunLater::start([]() { wxGetApp().open_preferences(); });
+    else if (action == "scroll_dialog" || action == "close_dialogs") {
+        for (wxWindow* window : wxTopLevelWindows) {
+            auto* dialog = dynamic_cast<wxDialog*>(window);
+            if (dialog == nullptr || !dialog->IsModal())
+                continue;
+            if (action == "close_dialogs") {
+                dialog->EndModal(wxID_CANCEL);
+                continue;
+            }
+            // Bring the end of the dialog's scrolled page into view (the MCP section is last).
+            std::vector<wxWindow*> pending { dialog };
+            while (!pending.empty()) {
+                wxWindow* current = pending.back();
+                pending.pop_back();
+                if (auto* scrolled = dynamic_cast<wxScrolledWindow*>(current)) {
+                    scrolled->Scroll(0, 100000);
+                    break;
+                }
+                for (wxWindow* child : current->GetChildren())
+                    pending.push_back(child);
+            }
+        }
+    }
 
     json out = json::object();
     out["minimized"] = frame->IsIconized();
@@ -300,7 +330,7 @@ MCP_TOOL_GROUP(Debug)
         tool.name = "debug_window";
         tool.description = "Test only. Reports the window state and the user's camera; can minimise or restore the window and switch between the Prepare and Preview tabs.";
         tool.input_schema = Schema::parse(R"JSON({"type": "object", "properties": {
-            "action": {"enum": ["state", "minimize", "restore", "preview", "prepare"], "default": "state"}},
+            "action": {"enum": ["state", "minimize", "restore", "preview", "prepare", "preferences", "scroll_dialog", "close_dialogs"], "default": "state"}},
             "additionalProperties": false})JSON", "debug_window");
         tool.requires_idle_ui = false;
         tool.accepts_if_rev = false;
