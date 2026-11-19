@@ -396,3 +396,5 @@ src/slic3r/GUI/TaskManager.cpp
 src/slic3r/GUI/Widgets/ProgressDialog.hpp
 src/slic3r/GUI/Widgets/StepCtrl.cpp
 src/slic3r/Mcp/McpPreferences.cpp
+src/slic3r/Mcp/tools/printers/PrintSend.cpp
+src/slic3r/Mcp/tools/printers/SendConfirm.cpp

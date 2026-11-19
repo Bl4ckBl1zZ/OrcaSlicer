@@ -226,6 +226,10 @@ DialogRecord DialogGuard::describe(wxDialog* dialog)
 
 int DialogGuard::Enter(wxDialog* dialog)
 {
+    // The print confirmation (tools/printers/SendConfirm.hpp) is the user's to answer, always. It is
+    // modeless and never reaches this hook; should it ever be shown modally, it is left alone.
+    if (dialog != nullptr && dialog->GetName() == "mcp_print_confirm")
+        return wxID_NONE;
     DialogRecord record = describe(dialog);
 
     if (m_call_records != nullptr) {

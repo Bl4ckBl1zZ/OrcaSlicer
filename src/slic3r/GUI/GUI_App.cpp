@@ -211,6 +211,9 @@
 #include "Preferences.hpp"
 #ifdef SLIC3R_MCP
 #include "slic3r/Mcp/McpService.hpp"
+#ifdef SLIC3R_MCP_TEST_PRINTERS
+#include "slic3r/Mcp/testing/FakePrinters.hpp"
+#endif
 #endif
 #include "Tab.hpp"
 #include "UpdateDialogs.hpp"
@@ -4299,6 +4302,10 @@ bool GUI_App::on_init_network(bool try_backup)
     std::string data_directory = data_dir();
 
     // Register all printer agents before creating the network agent
+#if defined(SLIC3R_MCP) && defined(SLIC3R_MCP_TEST_PRINTERS)
+    // MCP: test builds only. With ORCA_MCP_FAKE_PRINTERS set, a fake agent takes the "bbl" id first.
+    Mcp::Testing::register_fake_printer_agent();
+#endif
     Slic3r::NetworkAgentFactory::register_all_agents();
 
     // m_agent = new Slic3r::NetworkAgent(data_directory);
@@ -4354,6 +4361,10 @@ bool GUI_App::on_init_network(bool try_backup)
         m_agent->start();
         // Orca: disable Bambu telemetry up-front (before any login) so it never starts.
         check_track_enable();
+#if defined(SLIC3R_MCP) && defined(SLIC3R_MCP_TEST_PRINTERS)
+        // MCP: test builds only. Wires the fake agent's discovery into the device manager.
+        Mcp::Testing::attach_fake_printers(m_agent, m_device_manager);
+#endif
     }
 
     // When using Orca cloud alongside the BBL network plugin, the BBL DLL agent still

@@ -120,3 +120,44 @@ Codes of `paint_apply`, `paint_get` and `plate_layer_events` (besides `invalid_a
 | `too_fine` | Painting at `resolution_mm` would add more than `max_new_triangles` triangles and `coarsen` is false. `details` has the part, resolution and budget. | Use a coarser `resolution_mm`, `mode: "facets"`, a smaller region, a higher budget, or leave `coarsen` on. |
 | `seed_missed` | A ray or pixel seed hits none of the painted parts. | Check the pixel against the screenshot the camera came from, or aim the ray at the part; or use a point seed. |
 | `forbidden_key` | `plate_layer_events` type `custom` while the user has not allowed G-code edits (`mcp_allow_gcode_edit`). | Ask the user to allow it in Preferences, or use `pause` / `filament_change` / `color_change`. |
+
+## Printers
+
+Codes of `printer_list`, `printer_status`, `print_send` and `printer_control`
+([tools-printers.md](tools-printers.md)). They also raise `invalid_argument` (a `printer` that is
+not a string, an `ams_mapping` filament the plate does not use (`details.used_filaments`), an
+`ams_mapping` list for a host printer, a `file_name` with folders or special characters),
+`stale_id` (no such plate), `untrusted_scripts`, `busy_slicing` and `not_sliced` (also: the plate
+uses no filament) as defined above. A refusal sends nothing and opens no window.
+
+| Code | Meaning | What the agent should do |
+|---|---|---|
+| `printer_access_disabled` | The user has not switched on "Allow AI agents to read printer status" (`printer_list`, `printer_status`) or "Allow AI agents to send print jobs" (`print_send`, `printer_control`). Off by default. `details: {preference, tool}`. | Ask the user to switch it on in Preferences, MCP server section, if they want this. No tool can change it. |
+| `printer_not_found` | No printer has this id or exact name (`details.printers` lists `{id, name}`); or the printer disappeared from the device manager, or a host printer's preset is gone. | Call `printer_list` and use an id. |
+| `ambiguous_printer` | Several printers have this name. `details.ids`. | Use the id. |
+| `slice_stale` | The plate changed after it was sliced, or its sliced G-code is no longer on disk. `details` is the plate state when known. | Slice again, then send. |
+| `printer_incompatible` | The printer does not match the printer preset the plate was sliced for (model, nozzle diameter, or a host printer whose preset differs). `details` is the compatibility (`reasons`). | Select a matching printer preset (or another printer), slice again, then send. |
+| `printer_offline` | The printer is offline, the host does not answer (in time), or the application no longer knows the printer. As a job outcome (`not_sent`): it went offline while the request waited. | Ask the user to switch it on or check its network; check with `printer_status`. |
+| `printer_status_unknown` | Bambu Lab: no status from the printer in the last 15 s (it is not the printer selected in the Device tab). | Call `printer_status` for it (it connects and waits), then repeat. |
+| `printer_busy` | The printer is printing, preparing or paused (hosts also: in error). `details` is its status. As a job outcome (`not_sent`): it became busy while the request waited. | Wait until it is idle (`printer_status`), then send. |
+| `unsupported_printer` | Bambu Lab printers with two nozzles are not supported by the server yet. | Ask the user to send it from the window (Print plate). |
+| `no_storage` | Bambu Lab: `storage: "sdcard"` without a usable card, `storage: "internal"` on a printer without it, or a LAN printer with no usable storage. | Use `storage: "auto"`, or ask the user to insert a card. |
+| `incomplete_mapping` | An explicit `ams_mapping` gives no tray for a filament the plate uses. `details.trays`. | Map every used filament, or pass `"auto"`. |
+| `tray_not_found` | The printer has no tray with that label, or (`"auto"` without AMS) no external spool holder. `details.trays` when known. | Use a label from `printer_status`. |
+| `no_matching_tray` | `"auto"`: no tray could be matched to a filament. `details.trays`. | Map the trays explicitly, or ask the user to load the filament. |
+| `tray_empty` | A mapped tray is empty. `details.trays`. | Map a loaded tray, or ask the user to load the filament. |
+| `filament_type_mismatch` | A mapped tray holds another material than the filament (compared by the type's first word). `details.trays`. | Map a tray with the right material, or change the plate's filament and slice again. A different colour is only a warning. |
+| `post_processing_not_supported` | Host printer: the process preset has post-processing scripts; the server does not run them, so the upload would differ from what the window sends. | Ask the user to send it from the window, or to remove the scripts. |
+| `rate_limited` | A confirmation window is open and three more requests already wait behind it. | Wait for the user to answer (`job_status`), then try again. |
+| `send_failed` | Writing the file to send failed (call error), or the transfer failed after the user confirmed (job outcome `failed`; `message` says why). | Slice again and retry if writing failed. After a failed transfer, ask the user to check the printer (Device tab, access code) or the host's Connection settings (address, API key) before trying again. |
+| `invalid_state` | `printer_control` on a Bambu Lab printer that cannot do the action now (nothing printing, already paused ...); `details` is its status. As a stop's job outcome (`not_sent`): the print ended while the request waited. | Check `printer_status`. |
+| `control_failed` | The printer or host did not take the pause, resume or stop command (also: a host type other than OctoPrint or Moonraker). | Check `printer_status`; retry a pause or resume once. |
+
+Job outcomes, in `result.error.code` of a finished `print_send` or `printer_control` stop job (not
+call errors):
+
+| Code | Meaning | What the agent should do |
+|---|---|---|
+| `declined` | The user clicked Cancel, pressed Escape or closed the confirmation window. Nothing was sent. | Do not send it again unless the user asks you to. |
+| `timed_out` | Nobody answered the confirmation window within 5 minutes. Nothing was sent. | Ask the user whether they want it, then call again while they are at the computer. |
+| `cancelled` | The agent withdrew the request with `job_cancel` before the user answered; nothing was sent (outcome `cancelled`). With outcome `failed`: the application's print job was stopped during the transfer. | Check `printer_status` before sending again. |

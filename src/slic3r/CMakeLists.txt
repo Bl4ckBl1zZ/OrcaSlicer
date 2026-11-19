@@ -862,9 +862,20 @@ set(SLIC3R_GUI_SOURCES
 # MCP server: lets a local AI agent drive the open project (src/slic3r/Mcp, docs/mcp).
 # The sources are listed in Mcp/McpSources.cmake.
 option(SLIC3R_MCP "Build the built-in MCP server" ON)
+# Test builds only: compiles a fake Bambu printer agent (Mcp/testing) that the MCP printer tests switch
+# on with ORCA_MCP_FAKE_PRINTERS. Release, CI and daily builds leave it OFF; without it the variable is
+# ignored and no fake code is in the binary.
+option(SLIC3R_MCP_TEST_PRINTERS "MCP: build the fake printer agent used by tests/mcp (never for release)" OFF)
 if (SLIC3R_MCP)
     include(Mcp/McpSources.cmake)
     list(APPEND SLIC3R_GUI_SOURCES ${SLIC3R_MCP_SOURCES})
+    if (SLIC3R_MCP_TEST_PRINTERS)
+        message(WARNING "SLIC3R_MCP_TEST_PRINTERS is ON: this build contains the fake printer agent. Do not ship it.")
+        file(GLOB SLIC3R_MCP_TESTING_SOURCES CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Mcp/testing/*.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Mcp/testing/*.hpp")
+        list(APPEND SLIC3R_GUI_SOURCES ${SLIC3R_MCP_TESTING_SOURCES})
+    endif ()
 endif ()
 
 # Design/CAD tab: parametric sketch UI, its gizmos, and the MCP control socket.
@@ -951,6 +962,9 @@ endif ()
 target_include_directories(libslic3r_gui PRIVATE Utils ${CMAKE_CURRENT_BINARY_DIR})
 if (SLIC3R_MCP)
     target_compile_definitions(libslic3r_gui PRIVATE SLIC3R_MCP)
+    if (SLIC3R_MCP_TEST_PRINTERS)
+        target_compile_definitions(libslic3r_gui PRIVATE SLIC3R_MCP_TEST_PRINTERS)
+    endif ()
 endif ()
 
 # Orca: Bambu network plug-in through the Linux runtime (WSL2) on Windows.

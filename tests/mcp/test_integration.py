@@ -33,6 +33,7 @@ TOOLS = {
     "preset_rename", "preset_diff", "filament_list", "filament_edit", "modifier_add", "modifier_update", "layer_range",
     "paint_apply", "paint_get", "plate_layer_events",
     "plate_validate", "slice", "slice_status", "slice_cancel", "slice_result", "slice_layers", "analyze",
+    "printer_list", "printer_status", "print_send", "printer_control",
 }
 REMOVED = {"slice_export", "modifier_delete"}
 

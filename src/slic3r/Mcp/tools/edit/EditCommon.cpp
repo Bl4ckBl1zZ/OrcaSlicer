@@ -1,6 +1,7 @@
 #include "EditCommon.hpp"
 
 #include <algorithm>
+#include <stdexcept>
 
 #include <wx/app.h>
 #include <wx/evtloop.h>
@@ -170,6 +171,10 @@ void ScopedAppConfig::set(const std::string& key, const std::string& value) { se
 
 void ScopedAppConfig::set(const std::string& section, const std::string& key, const std::string& value)
 {
+    // The MCP server's own switches (mcp_*: printer access, G-code editing ...) belong to the user:
+    // no tool may change them, not even for the length of one call.
+    if (key.rfind("mcp_", 0) == 0)
+        throw std::logic_error("MCP: refusing to change the app setting " + key);
     AppConfig* config = wxGetApp().app_config;
     m_saved.push_back({section, key, config->get(section, key)});
     config->set(section, key, value);
