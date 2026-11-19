@@ -14,6 +14,7 @@ def test_app_status(client):
     assert status["app"] == "OrcaSlicer" and status["technology"] == "FFF"
     assert status["printer"]["preset"] and status["printer"]["extruders"] >= 1
     assert len(status["printer"]["bed"]) == 2 and status["printer"]["height"] > 0
+    assert isinstance(status["printer"]["bed_type"], str) and status["printer"]["bed_type"]
     assert status["process"]["preset"]
     assert status["filaments"][0]["slot"] == 1 and status["filaments"][0]["color"].startswith("#")
     assert status["busy"] == {"slicing": False, "jobs": [], "modal_dialog": None, "gizmo": None, "blocks_changes": None}

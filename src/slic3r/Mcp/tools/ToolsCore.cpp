@@ -221,7 +221,7 @@ MCP_TOOL_GROUP(Core)
         tool.name = "app_status";
         tool.title = "Application status";
         tool.description =
-            "Status of the OrcaSlicer window this server drives: application version, printer and process presets in use, project name and "
+            "Status of the OrcaSlicer window this server drives: application version, printer (preset, bed size, nozzles, plate type) and process presets in use, project name and "
             "unsaved state, filaments, what is busy right now (slicing, running jobs, an open dialog or gizmo, and whether changes are blocked), "
             "the next undo and redo step, the folders files may be read from and written to, and the coordinate and id conventions. "
             "Call it first in a session, and again when a call fails with ui_busy.";

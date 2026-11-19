@@ -388,6 +388,10 @@ json printer_json()
         out["bed"] = json::array({nominal(size.x()), nominal(size.y())});
         out["height"] = nominal(size.z());
     }
+    // The plate type of the project (the Prepare tab's plate-type selector); it drives the bed and
+    // first-layer temperatures. Plates can override it (scene_get plates[].overrides).
+    if (const ConfigOption* bed_type = bundle.project_config.option("curr_bed_type"); bed_type != nullptr)
+        out["bed_type"] = bed_type->serialize();
     if (const auto* nozzles = preset.config.option<ConfigOptionFloats>("nozzle_diameter"); nozzles != nullptr) {
         out["extruders"] = nozzles->values.size();
         json diameters = json::array();
