@@ -320,10 +320,6 @@ typedef BOOL (WINAPI *LPFN_ISWOW64PROCESS2)(
 #include "LinuxDisplayBackend.hpp"
 #endif
 
-#ifdef SLIC3R_MCP_PREVIEW
-#include "slic3r/Mcp/McpPreviewTestHook.hpp"
-#endif
-
 // Needed for forcing menu icons back under gtk2 and gtk3
 #if defined(__WXGTK20__) || defined(__WXGTK3__)
     #include <gtk/gtk.h>
@@ -1242,10 +1238,6 @@ void GUI_App::post_init()
     if (m_startup_cloud_report)
         std::exchange(m_startup_cloud_report, nullptr)();
 
-#ifdef SLIC3R_MCP_PREVIEW
-    // MCP preview renderer test hook: does nothing unless ORCA_MCP_PREVIEW_TEST names a job file.
-    Mcp::PreviewTestHook::start_if_requested();
-#endif
     BOOST_LOG_TRIVIAL(info) << "finished post_init";
 //BBS: remove the single instance currently
 #ifdef _WIN32

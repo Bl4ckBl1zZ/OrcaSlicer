@@ -903,22 +903,6 @@ if (WIN32)
         )
 endif ()
 
-# MCP server: offscreen renderer of the sliced G-code preview (Mcp/McpPreviewRenderer.*) and its
-# test hook (Mcp/McpPreviewTestHook.*, inert unless ORCA_MCP_PREVIEW_TEST is set). The MCP server's
-# own source list (Mcp/McpSources.cmake) globs Mcp/*.cpp and picks these files up by itself; this
-# block only adds them when that list is absent.
-if (NOT DEFINED SLIC3R_MCP OR SLIC3R_MCP)
-    if (NOT DEFINED SLIC3R_MCP_SOURCES)
-        list(APPEND SLIC3R_GUI_SOURCES
-            Mcp/McpPreviewRenderer.cpp
-            Mcp/McpPreviewRenderer.hpp
-            Mcp/McpPreviewTestHook.cpp
-            Mcp/McpPreviewTestHook.hpp
-        )
-    endif ()
-    add_compile_definitions(SLIC3R_MCP_PREVIEW)
-endif ()
-
 if (APPLE)
     list(APPEND SLIC3R_GUI_SOURCES
             Utils/RetinaHelperImpl.mm
