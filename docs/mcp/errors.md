@@ -63,3 +63,14 @@ JSON-RPC errors, not tool results:
 | `-32602` | 400 (modern), 200 (legacy) | Invalid params: unknown tool, arguments not an object, missing `_meta` fields. |
 | `-32020` | 400 | Header mismatch: a mirrored header is missing or differs from the body. |
 | `-32022` | 400 | Unsupported protocol version; `data.supported` lists the versions. |
+
+## Paint
+
+Codes of `paint_apply`, `paint_get` and `plate_layer_events` (besides `invalid_argument` and `stale_id`):
+
+| Code | Meaning | What the agent should do |
+|---|---|---|
+| `not_a_part` | A target is a modifier, negative part, support enforcer/blocker or another body that carries no paint, or the targets have no model part. | Target the object or one of its parts (`scene_get` lists them with type `part`). |
+| `too_fine` | Painting at `resolution_mm` would add more than `max_new_triangles` triangles and `coarsen` is false. `details` has the part, resolution and budget. | Use a coarser `resolution_mm`, `mode: "facets"`, a smaller region, a higher budget, or leave `coarsen` on. |
+| `seed_missed` | A ray or pixel seed hits none of the painted parts. | Check the pixel against the screenshot the camera came from, or aim the ray at the part; or use a point seed. |
+| `forbidden_key` | `plate_layer_events` type `custom` while the user has not allowed G-code edits (`mcp_allow_gcode_edit`). | Ask the user to allow it in Preferences, or use `pause` / `filament_change` / `color_change`. |
