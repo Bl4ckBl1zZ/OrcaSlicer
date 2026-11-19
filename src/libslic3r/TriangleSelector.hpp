@@ -445,6 +445,50 @@ public:
         const Transform3d& target_transform,
         const std::optional<std::reference_wrapper<const TriangleSplittingData>>& existing_painting);
 
+    // Painting by a geometric rule instead of a GUI cursor (see FacetPaint.hpp).
+    enum class RegionOverlap : int8_t { Outside, Partial, Inside };
+
+    // A region of space tested by select_region(). Triangles and points are in the mesh frame,
+    // source_facet is the original mesh triangle they belong to. Inside and Outside must be exact;
+    // Partial is always a safe answer, it only costs subdivision.
+    class Region
+    {
+    public:
+        virtual ~Region() = default;
+        virtual RegionOverlap classify(const Vec3f &a, const Vec3f &b, const Vec3f &c, int source_facet) const = 0;
+        // Used for triangles too small to be split further: decided by their centroid.
+        virtual bool          contains(const Vec3f &p, int source_facet) const = 0;
+    };
+
+    struct RegionParams
+    {
+        // Triangles straddling the region boundary are split until their sides are no longer than
+        // edge_limit, measured after edge_trafo (mesh frame -> frame of the limit, usually world).
+        float       edge_limit = 0.3f;
+        Transform3f edge_trafo = Transform3f::Identity();
+        // Only repaint leaf triangles currently in this state.
+        std::optional<EnforcerBlockerType> only_state;
+        // Only repaint leaf triangles flagged by the last seed fill or bucket fill.
+        bool        only_seed_fill_selected = false;
+        // Give up once the number of live triangles would exceed this (0: no limit).
+        size_t      max_triangles = 0;
+    };
+
+    // Paint new_state where the region covers the surface, subdividing boundary triangles down to
+    // params.edge_limit and merging children that end up in one state. Paint outside the region and
+    // leaves rejected by the filters are kept. Visits the given original facets, or all of them.
+    // Returns false if params.max_triangles was reached; the selection is then partly applied and
+    // should be discarded by the caller.
+    bool select_region(const Region &region, EnforcerBlockerType new_state, const RegionParams &params,
+                       const std::vector<int> *facets = nullptr);
+
+    // Calls fn(a, b, c, state, source_facet) for every leaf triangle (mesh frame).
+    void for_each_leaf(const std::function<void(const Vec3f &, const Vec3f &, const Vec3f &, EnforcerBlockerType, int)> &fn) const;
+    // Triangles (split nodes and leaves) currently allocated, original ones included.
+    size_t num_live_triangles() const { return m_triangles.size() - size_t(m_invalid_triangles); }
+    // Approximate heap memory held by this selector, in bytes.
+    size_t memory_usage() const;
+
 protected:
     // Triangle and info about how it's split.
     class Triangle {
@@ -547,11 +591,15 @@ protected:
     std::unique_ptr<Cursor> m_cursor;
     // Zero indicates an uninitialized state.
     float m_old_cursor_radius_sqr = 0;
+    // Set by select_region(): split_triangle() measures sides after this transformation instead of the cursor's.
+    const Transform3f *m_split_trafo = nullptr;
 
     // Private functions:
 private:
     bool select_triangle(int facet_idx, EnforcerBlockerType type, bool triangle_splitting, bool select_partially);
     bool select_triangle_recursive(int facet_idx, const Vec3i32 &neighbors, EnforcerBlockerType type, bool triangle_splitting, bool select_partially);
+    void select_region_recursive(int facet_idx, const Vec3i32 &neighbors, const Region &region, EnforcerBlockerType new_state,
+                                 const RegionParams &params, bool &within_limit);
     void undivide_triangle(int facet_idx);
     void split_triangle(int facet_idx, const Vec3i32 &neighbors);
     void remove_useless_children(int facet_idx); // No hidden meaning. Triangles are meant.

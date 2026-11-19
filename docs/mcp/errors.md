@@ -107,3 +107,14 @@ Projects, import/export, objects, plates (`tools-project.md`, `tools-objects.md`
 | `export_failed` | Writing the G-code or `.gcode.3mf` failed. | Check the folder; slice again if the sliced G-code is gone. |
 | `not_available` | The slice analysis module is not built into this version. | Use `slice_result`. |
 | `gl_unavailable` | No usable GL context for a preview picture. | Bring the OrcaSlicer window on screen and retry. |
+
+## Paint
+
+Codes of `paint_apply`, `paint_get` and `plate_layer_events` (besides `invalid_argument` and `stale_id`):
+
+| Code | Meaning | What the agent should do |
+|---|---|---|
+| `not_a_part` | A target is a modifier, negative part, support enforcer/blocker or another body that carries no paint, or the targets have no model part. | Target the object or one of its parts (`scene_get` lists them with type `part`). |
+| `too_fine` | Painting at `resolution_mm` would add more than `max_new_triangles` triangles and `coarsen` is false. `details` has the part, resolution and budget. | Use a coarser `resolution_mm`, `mode: "facets"`, a smaller region, a higher budget, or leave `coarsen` on. |
+| `seed_missed` | A ray or pixel seed hits none of the painted parts. | Check the pixel against the screenshot the camera came from, or aim the ray at the part; or use a point seed. |
+| `forbidden_key` | `plate_layer_events` type `custom` while the user has not allowed G-code edits (`mcp_allow_gcode_edit`). | Ask the user to allow it in Preferences, or use `pause` / `filament_change` / `color_change`. |

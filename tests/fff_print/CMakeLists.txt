@@ -8,6 +8,7 @@ add_executable(${_TEST_NAME}_tests
 	test_cooling.cpp
 	test_extrusion_entity.cpp
 	test_extrusion_processor.cpp
+	test_facet_paint.cpp
 	test_exclusion_volumes.cpp
 	test_fan_mover.cpp
 	test_fill.cpp

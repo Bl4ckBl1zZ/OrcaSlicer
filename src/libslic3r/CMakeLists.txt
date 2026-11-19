@@ -147,6 +147,8 @@ set(lisbslic3r_sources
     ExtrusionSimulator.hpp
     FaceDetector.cpp
     FaceDetector.hpp
+    FacetPaint.cpp
+    FacetPaint.hpp
     Feature/FuzzySkin/FuzzySkin.cpp
     Feature/FuzzySkin/FuzzySkin.hpp
     Feature/Interlocking/InterlockingGenerator.cpp

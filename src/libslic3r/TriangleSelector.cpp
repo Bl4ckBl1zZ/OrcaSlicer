@@ -1030,6 +1030,112 @@ void TriangleSelector::set_facet(int facet_idx, EnforcerBlockerType state)
     m_triangles[facet_idx].set_state(state);
 }
 
+bool TriangleSelector::select_region(const Region &region, EnforcerBlockerType new_state, const RegionParams &params, const std::vector<int> *facets)
+{
+    set_edge_limit(std::max(params.edge_limit, float(EPSILON)));
+    // The next select_patch() has to derive its edge limit from its cursor again.
+    m_old_cursor_radius_sqr = 0.f;
+    m_split_trafo           = &params.edge_trafo;
+
+    bool within_limit = true;
+    auto process      = [&](int facet_idx) {
+        assert(facet_idx >= 0 && facet_idx < m_orig_size_indices);
+        this->select_region_recursive(facet_idx, m_neighbors[facet_idx], region, new_state, params, within_limit);
+        // Children that ended up in one state are merged back into their parent.
+        this->remove_useless_children(facet_idx);
+        if (2 * m_invalid_triangles > int(m_triangles.size()))
+            this->garbage_collect();
+    };
+    if (facets != nullptr) {
+        for (auto it = facets->begin(); it != facets->end() && within_limit; ++it)
+            process(*it);
+    } else {
+        for (int facet_idx = 0; facet_idx < m_orig_size_indices && within_limit; ++facet_idx)
+            process(facet_idx);
+    }
+
+    m_split_trafo = nullptr;
+    return within_limit;
+}
+
+void TriangleSelector::select_region_recursive(int facet_idx, const Vec3i32 &neighbors, const Region &region, EnforcerBlockerType new_state,
+                                               const RegionParams &params, bool &within_limit)
+{
+    if (! within_limit)
+        return;
+
+    assert(facet_idx < int(m_triangles.size()) && m_triangles[facet_idx].valid());
+    assert(this->verify_triangle_neighbors(m_triangles[facet_idx], neighbors));
+    // Copies: m_vertices may be reallocated by a split below.
+    const Vec3f a = m_vertices[m_triangles[facet_idx].verts_idxs[0]].v;
+    const Vec3f b = m_vertices[m_triangles[facet_idx].verts_idxs[1]].v;
+    const Vec3f c = m_vertices[m_triangles[facet_idx].verts_idxs[2]].v;
+    const int   source_facet = m_triangles[facet_idx].source_triangle;
+
+    const RegionOverlap overlap = region.classify(a, b, c, source_facet);
+    if (overlap == RegionOverlap::Outside)
+        return;
+
+    const bool filtered = params.only_state.has_value() || params.only_seed_fill_selected;
+    if (m_triangles[facet_idx].is_split()) {
+        if (overlap == RegionOverlap::Inside && ! filtered) {
+            this->undivide_triangle(facet_idx);
+            m_triangles[facet_idx].set_state(new_state);
+            return;
+        }
+        for (int i = 0; i <= m_triangles[facet_idx].number_of_split_sides() && within_limit; ++i) {
+            const Triangle &tr = m_triangles[facet_idx];
+            this->select_region_recursive(tr.children[i], this->child_neighbors(tr, neighbors, i), region, new_state, params, within_limit);
+        }
+        return;
+    }
+
+    // A leaf triangle.
+    const Triangle &leaf = m_triangles[facet_idx];
+    if ((params.only_state && leaf.get_state() != *params.only_state) ||
+        (params.only_seed_fill_selected && ! leaf.is_selected_by_seed_fill()) ||
+        leaf.get_state() == new_state)
+        return;
+    if (overlap == RegionOverlap::Inside) {
+        m_triangles[facet_idx].set_state(new_state);
+        return;
+    }
+
+    // Straddling the region boundary: split where the sides are still longer than the edge limit,
+    // otherwise decide by the centroid, which keeps the painted area unbiased.
+    if (params.max_triangles != 0 && this->num_live_triangles() + 4 > params.max_triangles) {
+        within_limit = false;
+        return;
+    }
+    const bool seed_selected = leaf.is_selected_by_seed_fill();
+    this->split_triangle(facet_idx, neighbors);
+    if (! m_triangles[facet_idx].is_split()) {
+        if (region.contains((a + b + c) / 3.f, source_facet))
+            m_triangles[facet_idx].set_state(new_state);
+        return;
+    }
+    for (int i = 0; i <= m_triangles[facet_idx].number_of_split_sides() && within_limit; ++i) {
+        const Triangle &tr    = m_triangles[facet_idx];
+        const int       child = tr.children[i];
+        if (seed_selected)
+            m_triangles[child].select_by_seed_fill();
+        this->select_region_recursive(child, this->child_neighbors(tr, neighbors, i), region, new_state, params, within_limit);
+    }
+}
+
+void TriangleSelector::for_each_leaf(const std::function<void(const Vec3f &, const Vec3f &, const Vec3f &, EnforcerBlockerType, int)> &fn) const
+{
+    for (const Triangle &tr : m_triangles)
+        if (tr.valid() && ! tr.is_split())
+            fn(m_vertices[tr.verts_idxs[0]].v, m_vertices[tr.verts_idxs[1]].v, m_vertices[tr.verts_idxs[2]].v, tr.get_state(), tr.source_triangle);
+}
+
+size_t TriangleSelector::memory_usage() const
+{
+    return m_triangles.capacity() * sizeof(Triangle) + m_vertices.capacity() * sizeof(Vertex) +
+           m_neighbors.capacity() * sizeof(Vec3i32) + m_face_normals.capacity() * sizeof(Vec3f);
+}
+
 // called by select_patch()->select_triangle()...select_triangle()
 // to decide which sides of the triangle to split and to actually split it calling set_division() and perform_split().
 void TriangleSelector::split_triangle(int facet_idx, const Vec3i32 &neighbors)
@@ -1054,10 +1160,12 @@ void TriangleSelector::split_triangle(int facet_idx, const Vec3i32 &neighbors)
     std::array<stl_vertex, 3> pts_transformed; // must stay in scope of pts !!!
 
     // In case the object is non-uniformly scaled, transform the
-    // points to world coords.
-    if (! m_cursor->uniform_scaling) {
+    // points to world coords. select_region() always measures in its own frame.
+    const Transform3f *trafo = m_split_trafo != nullptr ? m_split_trafo :
+                               m_cursor->uniform_scaling ? nullptr : &m_cursor->trafo;
+    if (trafo != nullptr) {
         for (size_t i=0; i<pts.size(); ++i) {
-            pts_transformed[i] = m_cursor->trafo * (*pts[i]);
+            pts_transformed[i] = (*trafo) * (*pts[i]);
             pts[i] = &pts_transformed[i];
         }
     }
