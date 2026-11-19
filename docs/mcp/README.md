@@ -141,7 +141,8 @@ One reference page per tool group:
 | Settings | `settings_search`, `settings_get`, `preset_list`, `filament_list` | [tools-settings.md](tools-settings.md) |
 | View | `screenshot` | [tools-view.md](tools-view.md) |
 
-`tools/list` is the authority on what a build offers.
+[tools.md](tools.md) is the complete reference, generated from the registry
+(`tests/mcp/gen_tool_reference.py`); `tools/list` is the authority on what a build offers.
 
 ## Build and environment
 
