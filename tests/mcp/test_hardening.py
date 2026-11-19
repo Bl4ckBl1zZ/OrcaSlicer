@@ -119,6 +119,13 @@ def test_foreign_start_gcode_refused(hd):
     assert failure.code == "untrusted_gcode", failure
     settings = failure.details["settings"]
     assert any(s["key"] == "machine_start_gcode" and s["scope"] == "printer" for s in settings), settings
+    # D5: the refusal names the setting, calls it the usual embedded-preset case and says how to trust it.
+    assert failure.details["embedded_presets_only"] is True, failure.details
+    assert failure.details["gcode_edit_allowed"] is True, failure.details
+    assert failure.details["trust_with"]["trust_embedded_gcode"] is True, failure.details
+    assert "printer machine_start_gcode" in failure.message, failure.message
+    assert "Bambu Studio" in failure.message, failure.message
+    assert "trust_embedded_gcode: true" in failure.hint, failure.hint
     # The load was undone.
     assert hd.tool("scene_get")["object_count"] == 0
     assert "MCP-FOREIGN-START" not in value(hd, "printer", "machine_start_gcode")
@@ -144,6 +151,7 @@ def test_plate_custom_gcode_refused(hd):
     failure = hd.tool_error("project_open", path=str(path), on_unsaved="discard")
     assert failure.code == "untrusted_gcode", failure
     assert any(s["scope"] == "plate" and s["key"] == "custom_gcode" for s in failure.details["settings"]), failure.details
+    assert failure.details["embedded_presets_only"] is False, failure.details
     assert hd.tool("scene_get")["object_count"] == 0
     hd.tool("project_open", path=str(path), trust_embedded_gcode=True, on_unsaved="discard")
     assert hd.tool("scene_get")["object_count"] == 1

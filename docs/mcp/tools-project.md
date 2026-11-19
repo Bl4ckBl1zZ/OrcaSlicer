@@ -53,10 +53,16 @@ preset that came with the file its nearest ancestor (`inherits`) in the user's l
 when there is none); the G-code options of the project's own settings; and the plates' custom G-code
 (`plate_layer_events` of type `custom`). If the question came up or anything differs, the
 application has already loaded the presets, so the load is undone: the call fails with
-`untrusted_gcode`, `details: {path, settings, questions}` (`settings`: `{scope, key, kind, name?,
-slot? / plate?}` for each difference; `questions`: the application's question quoted, if any), and
-an **empty project** remains. Check the G-code, then repeat with `trust_embedded_gcode: true` (which
-needs the preference above).
+`untrusted_gcode`, `details: {path, settings, questions, embedded_presets_only, gcode_edit_allowed,
+trust_with}` (`settings`: `{scope, key, kind, name?, slot? / plate?}` for each difference;
+`questions`: the application's question quoted, if any; `embedded_presets_only`: every difference is
+in the process, printer or filament presets the file brought; `gcode_edit_allowed`: the preference
+above; `trust_with`: the arguments to open it trusted), and an **empty project** remains. The
+message names the first differing settings. Projects saved in Bambu Studio or on another computer
+nearly always end here: they embed their own printer and filament presets, whose start / end G-code
+differs from the user's, and the message says so. Check the G-code, then repeat with
+`trust_embedded_gcode: true` (which needs the preference above; when it is off, the hint tells the
+agent to ask the user to switch it on).
 
 Scripts, plug-ins and the printer's connection: a project opened through MCP never brings them,
 trusted G-code or not. Post-processing scripts (`post_process`), plug-in backed options

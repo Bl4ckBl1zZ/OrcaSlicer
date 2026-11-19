@@ -223,14 +223,43 @@ json project_open(ToolContext& ctx)
             roll_back_load();
             ctx.accept_dialogs();
             ctx.set_slice_invalidated();
-            fail("untrusted_gcode",
-                 "The project " + path.generic_string() +
-                     " carries custom G-code that the user's presets do not have; it was not opened (the load was undone, leaving an "
-                     "empty project).",
-                 "Check the G-code (details.settings lists where it is, details.questions quotes the application's question), then repeat "
-                 "with trust_embedded_gcode: true; that needs the user's \"Allow the agent to edit G-code settings\" preference "
-                 "(mcp_allow_gcode_edit).",
-                 json::object({{"path", path.generic_string()}, {"questions", questions}, {"settings", LoadGuard::to_json(foreign)}}));
+            // Name what was found, and say what the usual case is: a project saved by Bambu Studio or
+            // on another computer embeds its printer (and filament) presets, whose start / end G-code
+            // differs from the user's. That is ordinary, not an attack, but it is still the user's call.
+            std::vector<std::string> keys;
+            bool                     only_presets = !foreign.empty();
+            for (const LoadGuard::Finding& f : foreign) {
+                if (f.scope != "printer" && f.scope != "filament" && f.scope != "process")
+                    only_presets = false;
+                const std::string item = f.scope + " " + f.key;
+                if (std::find(keys.begin(), keys.end(), item) == keys.end() && keys.size() < 6)
+                    keys.push_back(item);
+            }
+            std::string found;
+            for (const std::string& k : keys)
+                found += (found.empty() ? "" : ", ") + k;
+            if (foreign.size() > keys.size())
+                found += ", ...";
+            const bool  allowed = wxGetApp().app_config->get_bool("mcp_allow_gcode_edit");
+            std::string message = "The project " + path.generic_string() + " carries custom G-code that the user's presets do not have" +
+                                  (found.empty() ? std::string() : " (" + found + ")") +
+                                  "; it was not opened (the load was undone, leaving an empty project).";
+            if (only_presets)
+                message += " This is the usual case for a project saved in Bambu Studio or on another computer: the file embeds its own "
+                           "printer and filament presets, and their start / end G-code differs from the user's.";
+            const std::string how = allowed ?
+                "Check the G-code (details.settings lists where it is, details.questions quotes the application's question); if it is "
+                "acceptable, open the project again with trust_embedded_gcode: true." :
+                "Check the G-code (details.settings lists where it is, details.questions quotes the application's question). To open it, "
+                "the user must first enable \"Allow the agent to edit G-code settings\" (Preferences > MCP server, mcp_allow_gcode_edit); "
+                "then open the project again with trust_embedded_gcode: true. Do not change that preference yourself; ask the user.";
+            fail("untrusted_gcode", message, how,
+                 json::object({{"path", path.generic_string()},
+                               {"questions", questions},
+                               {"settings", LoadGuard::to_json(foreign)},
+                               {"embedded_presets_only", only_presets},
+                               {"gcode_edit_allowed", allowed},
+                               {"trust_with", json::object({{"path", path.generic_string()}, {"trust_embedded_gcode", true}})}}));
         }
     }
     const std::vector<std::string> errors = error_dialog_texts(ctx);
