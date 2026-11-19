@@ -317,6 +317,7 @@ jobs:
           gh cache list --ref "$GITHUB_REF" --key "ccache-$CCACHE_LEG-" --limit 100 --json id,key \
             | jq -r --arg prefix "ccache-$CCACHE_LEG-" --argjson run "$GITHUB_RUN_ID" \
                 '.[] | select((.key | ltrimstr($prefix) | split("-")[0] | tonumber?) < $run) | .id' \
+            | tr -d '\r' \
             | while read -r id; do gh cache delete "$id"; done
 
       # The install step only warns when the Linux runtime is missing. Such a build starts, but
