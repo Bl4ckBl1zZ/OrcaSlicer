@@ -18,7 +18,7 @@ The whole batch is validated before anything is written:
 | Check | Error |
 |---|---|
 | The key exists | `unknown_key`, `details.nearest` |
-| Not a blocked key: `post_process`, `print_host*`, `printhost_*`, `bbl_use_printhost`, `printer_agent`, plugin-backed and read-only options; G-code text options unless the user enabled the MCP preference `mcp_allow_gcode_edit` | `forbidden_key` |
+| Not a blocked key: `post_process`, `print_host`, `print_host_webui`, `printhost_*`, `host_type`, `bbl_use_printhost`, `printer_agent`, `flashforge_serial_number`, plugin-backed and read-only options; G-code text options unless the user enabled the MCP preference `mcp_allow_gcode_edit` | `forbidden_key` |
 | The key belongs to the scope | `key_not_in_scope`, `details.scopes` lists where it can be set |
 | Type, enum, vector length | `invalid_value`, `details.values` / `labels` for enums |
 | min / max of the definition | `out_of_range`, `details.min` / `max` |
@@ -54,7 +54,9 @@ range keeps its `layer_height` and `extruder` (cannot be reset).
 ```
 
 `side_effects` are keys of the edited preset that changed without being asked for (the app's
-dependency rules). Model scopes return `object` (the object in `scene_get` shape) and `undo`; the plate
+dependency rules). The `old` / `new` values of the printer's address and credentials are
+`"<redacted>"` (see [tools-settings.md](tools-settings.md)); those keys cannot be written, but a
+dependency rule may still change one. Model scopes return `object` (the object in `scene_get` shape) and `undo`; the plate
 scope returns `plate`. Journal entries revert through `history` with action `revert`: the old values of
 every changed key (including side effects) are applied again through the same path; it fails with
 `conflict` if another preset is selected by then.

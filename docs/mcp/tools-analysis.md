@@ -17,6 +17,10 @@ kept, so `analyze {checks: ["diff"]}` answers "what did my change do" in one cal
 
 Errors: `not_sliced`, `busy_slicing`, `invalid_argument`, `not_available` (core not built in).
 
+The slicer's own warnings are not part of `analyze`: they are in `slice_result` (section
+`warnings`), with the GUI's text in `message` and the raw code in `code`
+([tools-slice.md](tools-slice.md#slice_result)).
+
 ## slice_layers
 
 Arguments: `plate?`, `from?`, `to?`, `every?`, `limit?` (max 200), `columns?`, `layer?`, `z?`,
@@ -38,7 +42,7 @@ Arguments: `plate?`, `checks` (any of the list below), `params?` (per check), `m
 
 | Check | What it reports | Params |
 |---|---|---|
-| `flow` | Highest volumetric flow per filament vs `filament_max_volumetric_speed`, where it peaks, how long the print runs at the limit | `tolerance` (0.02) |
+| `flow` | Highest volumetric flow per filament vs `filament_max_volumetric_speed`, where it peaks, how long the print runs at the limit and over it (verdicts below) | `tolerance` (0.02) |
 | `speeds` | Commanded speed and acceleration per feature vs configured | `tolerance` |
 | `cooling` | Layers below the slow-down / fan layer-time thresholds, shortest layer | - |
 | `supports` | Support volume, time, layers, clusters, contact area per object | - |
@@ -53,7 +57,16 @@ Arguments: `plate?`, `checks` (any of the list below), `params?` (per check), `m
 | `diff` | Changes since the plate's previous result, largest relative change first | `rel_tolerance` (0.001) |
 
 Filament slots are 1-based here too (the core's 0-based indices are shifted). Numbers are rounded to
-three decimals.
+three decimals; numbers inside verdict messages are written with at most one decimal (two for short
+times), without trailing zeros.
+
+`flow` verdict per filament: extrusion above `limit x (1 + tolerance)` is a `problem` only when it is
+significant, i.e. it lasts at least 1 s in total and at least 0.2 % of that filament's extrusion time
+("filament N exceeds its max volumetric speed for T s (L mm of extrusion, peak P > limit mm3/s)").
+Shorter overshoot (a few short segments, e.g. 0.08 s on a Benchy) is a `warning` ("filament N briefly
+exceeds its max volumetric speed: T s over L mm (peak P > limit mm3/s), negligible for the print"). Flow within the tolerance of the limit is a `warning` saying on how many
+layers and what share of the time the filament is limited; no `filament_max_volumetric_speed`
+configured is `ok`.
 
 ## Example (20 mm cube)
 

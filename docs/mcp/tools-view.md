@@ -41,7 +41,22 @@ Editor options:
 | `only` | | Draw only these objects, instances or volumes. |
 | `highlight` | | Draw these in orange. |
 | `transparent` | | Draw these translucent. |
-| `overlay` | `none` | Overlays are added by tool groups (paint, overhangs). |
+| `overlay` | `none` | Extra information drawn over the parts; see [Overlays](#overlays). |
+| `overhang_threshold_deg` | 45 | Number 0..90. Read by overlay `overhang` only. |
+
+### Overlays
+
+Overlays are added by tool groups; `tools/list` shows the ones a build has in the `editor.overlay`
+enum and the tool description. Each overlay may declare options of its own: they are merged into the
+`editor` object of the screenshot schema (validated like the other editor options) and passed to the
+overlay. Its legend is returned as `legend.overlay`.
+
+| Overlay | Options | Draws | `legend.overlay` |
+|---|---|---|---|
+| `support_paint`, `seam_paint`, `color_paint`, `fuzzy_paint` | - | The painted states of that channel flat over the parts (support enforcers green, blockers red; seam enforcers blue, blockers red; fuzzy green; colour in the filament colours). | `paint_channel`, `states` (`{state: "#RRGGBB"}`), `empty` when nothing is painted. |
+| `overhang` | `overhang_threshold_deg` (0..90, default 45) | Faces whose normal is within the threshold of straight down, in orange, including faces resting on the bed (as the support painting gizmo's "by angle" and `paint_apply`'s `overhang` selector). | `overhang` (the colour), `threshold_deg` (the threshold used), `area_mm2`. |
+
+Details of the paint overlays: [tools-paint.md](tools-paint.md#screenshot-overlays).
 
 The bed is drawn plainly so that a picture can be read and measured: the plate rectangle, grid
 lines every 10 mm with a bold line every 50 mm, counted from the plate origin, and the axes at the
@@ -97,11 +112,19 @@ RenderPlugins::add_view({"preview", "Sliced toolpaths of the plate ...", options
                                        });
     }});
 
-RenderPlugins::add_overlay({"support_paint", "Support paint: enforcers blue, blockers red.",
-    [](const Renderer::RenderTarget& target, const json& editor_options) { /* draw with target.camera */ }});
+OverlayPlugin overhang;
+overhang.name = "overhang";
+overhang.description = "faces within editor.overhang_threshold_deg (default 45) of facing straight down ...";
+overhang.options_schema = {{"overhang_threshold_deg", {{"type", "number"}, {"minimum", 0}, {"maximum", 90}, {"default", 45}}}};
+overhang.draw = [](const Renderer::RenderTarget& target, const json& editor_options) {
+    /* draw with target.camera; read editor_options["overhang_threshold_deg"]; fill *target.legend */ };
+RenderPlugins::add_overlay(std::move(overhang));
 ```
 
 A view's options are the tool argument named like the view (`"preview": {...}`); its schema is
-merged into the tool's schema. `render_custom` makes the GL context current, creates the
+merged into the tool's schema. An overlay's `options_schema` is a map `{name: schema}` of extra
+properties of the `editor` argument; they are merged into the `editor` schema, so names must not
+clash with the editor's own options or another overlay's. `draw` receives the whole `editor`
+object, and what it writes to `*target.legend` is returned as `legend.overlay`. `render_custom` makes the GL context current, creates the
 framebuffer, fits the camera to the box you give, draws the bed, calls your pass with the
 framebuffer bound, reads the picture back and encodes it.

@@ -32,7 +32,7 @@ Paint is stored per part in the mesh and is shared by all instances of an object
 | `channel` | `support` \| `seam` \| `color` \| `fuzzy_skin` | required | |
 | `state` | `"enforce"` \| `"block"` \| `"fuzzy"` \| `"none"` \| `{"filament": n}` | required for set/replace | support/seam: enforce, block; fuzzy_skin: fuzzy; color: a 1-based filament slot. `none` erases. |
 | `selector` | Selector | required except `clear` | What to paint (below). |
-| `op` | `set` \| `erase` \| `replace` \| `clear` | `set` | `erase` removes paint inside the selection; `replace` clears the channel on the targets first; `clear` removes all paint of the channel. |
+| `action` | `set` \| `erase` \| `replace` \| `clear` | `set` | `erase` removes paint inside the selection; `replace` clears the channel on the targets first; `clear` removes all paint of the channel. |
 | `only_where` | state | | Only repaint surface currently in this state. |
 | `mode` | `precise` \| `facets` | `precise` | `facets`: whole original triangles whose centroid is inside. |
 | `resolution_mm` | number 0.05..50 | 0.3 | Longest triangle side along a region boundary. |
@@ -92,7 +92,7 @@ Examples:
 ### Result
 
 ```json
-{"ok": true, "changed": true, "channel": "support", "op": "set", "state": "enforce", "mode": "precise",
+{"ok": true, "changed": true, "channel": "support", "action": "set", "state": "enforce", "mode": "precise",
  "resolution_mm": 0.2, "resolution_used_mm": 0.2, "coarsened": false, "facets_selected": 2, "triangles_added": 0,
  "area_mm2": {"before": {}, "after": {"enforce": 150.0}},
  "parts": [{"part": "v12", "object": "o10", "name": "t_shape.obj", "instance": "i11", "plate": 1, "changed": true,
@@ -110,7 +110,7 @@ state), `changed` is false and no undo step is taken, so repeating a call is har
 
 - An open gizmo is closed before the call (the core does this for every mutating tool; the result
   notes it). The paint gizmos commit each stroke on mouse-up, so nothing is lost.
-- One undo step per call, named `MCP: paint <channel> <state|op> on <objects>`.
+- One undo step per call, named `MCP: paint <channel> <state|action> on <objects>`.
 - After a change: the object list's paint rows, the plate's filament use (colour), the 3D view and the
   background process are refreshed, as the gizmos do after a stroke; the plate must be re-sliced.
 - `notes` say when the settings make new paint ineffective, as the GUI user would find out: support
@@ -174,15 +174,19 @@ Registered with the core's `RenderPlugins` (`screenshot` `editor.overlay`): `sup
 `seam_paint`, `color_paint`, `fuzzy_paint` draw the painted states flat over the parts (support
 enforcers green, blockers red, seam enforcers blue, fuzzy green, colour in the filament colours) and
 return `legend.overlay = {"paint_channel", "states": {state: "#RRGGBB"}}`; `overhang` draws faces
-within `editor.overhang_threshold_deg` (default 45) of facing down in orange, with their area. Like the
-`overhang` selector and the gizmo's "by angle", it includes faces resting on the bed (`mesh_query`
-`overhangs` leaves those out). The screenshot schema does not yet carry `overhang_threshold_deg` (a
-core request), so today the default 45 is what is drawn.
+within `editor.overhang_threshold_deg` (number 0..90, default 45) of facing down in orange and returns
+`legend.overlay = {"overhang": "#RRGGBB", "threshold_deg", "area_mm2"}`. Like the `overhang` selector
+and the gizmo's "by angle", it includes faces resting on the bed (`mesh_query` `overhangs` leaves those
+out). `overhang_threshold_deg` is an overlay option: `PaintOverlay.cpp` declares it in the overlay's
+`options_schema`, and the screenshot tool merges it into its `editor` schema (see
+[tools-view.md](tools-view.md#overlays)).
 
 ## Test-only tools
 
 Registered only with `ORCA_MCP_DEBUG_TOOLS=1`: `debug_paint_gizmo` (open/inspect/close a paint gizmo
 and compare what it loaded with the model), `debug_paint_3mf` (save a 3MF copy, load it into a
-separate Model, compare paint and layer events), `debug_paint_slice` (slice a copy of a plate with the
-app's configuration and write G-code), `debug_paint_fixture` (add a filament slot, transform an
-instance, add an instance, a modifier or a part).
+separate Model, compare paint and layer events). Its `path` goes through the file policy like any
+write (`Files::check_write`, `.3mf`, inside a write root such as the workspace, see
+[README](README.md#file-paths)); an existing file there is replaced. The paint tests build their scenes and check the
+sliced effect with the real tools (`filament_edit`, `object_transform`, `object_duplicate`,
+`modifier_add`, `settings_set`, `slice`, `export_file`), not with fixtures.

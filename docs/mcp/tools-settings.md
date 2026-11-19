@@ -23,7 +23,12 @@ Scope arguments:
 Values on the wire: booleans, numbers and strings as JSON natives; percentages as `"15%"`;
 float-or-percent options as a number (absolute) or a `"50%"` string; enums as their profile
 string; per-filament and per-extruder options as lists, with `null` for an unset entry of a
-nullable option; points as `[x, y]`. API keys and passwords are returned as `"<redacted>"`.
+nullable option; points as `[x, y]`. The printer's address and credentials (`printhost_apikey`,
+`printhost_password`, `printhost_user`, `printhost_port`, `printhost_cafile`, `print_host`,
+`print_host_webui`, `flashforge_serial_number`) are returned as `"<redacted>"` (`""` when not set),
+here and in every other tool that returns setting values (`settings_set` old/new values,
+`preset_diff`, unsaved-edit lists in `unsaved_changes` details and `discarded` results); their
+`default` in `settings_describe` is `""`.
 
 ## settings_search
 
@@ -50,8 +55,10 @@ Without arguments: `{"categories": {owner: {category: count}}, "total"}`. Otherw
 
 Other members when they apply: `values` and `labels` (enums), `vector` (`filament`, `extruder` or
 `list`), `nullable`, `percent_of` (the key a percentage refers to), `read_only`, and `write`
-(`"refused: ..."` for keys the agent may not set: post-processing scripts, printer host and
-credentials, plug-in backed options, and G-code text unless the user allowed it). Labels and
+(`"refused: ..."` for keys the agent may not set: post-processing scripts, the printer's address
+and credentials (`print_host`, `print_host_webui`, `printhost_*`, `host_type`, `bbl_use_printhost`,
+`printer_agent`, `flashforge_serial_number`), plug-in backed options, and G-code text unless the
+user allowed it). Labels and
 descriptions are the English source strings. Hits are ordered by how well they match, then by
 user mode, then by key.
 

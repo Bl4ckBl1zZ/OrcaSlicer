@@ -65,9 +65,13 @@ ids, or new objects) and `changed`. Errors: `invalid_argument`, `limit` (more th
 
 ## delete
 
-Delete objects, instances or parts / modifiers. Deleting every instance of an object deletes the
-object; the last solid part of an object cannot be deleted (`last_part`); single parts of a cut
-object with connectors are refused. Result: `removed` ids and the scene summary.
+`{targets}`: object, instance or volume ids, mixed freely. This is the one delete tool: it also
+removes the bodies `modifier_add` creates (modifiers, negative parts, support blockers / enforcers,
+seam bodies) and parts. Deleting every instance of an object deletes the object; the last solid part
+of an object cannot be deleted (`last_part`); single parts of a cut object with connectors are refused
+(`invalid_argument`). When one volume remains, its settings move to the object, as in the GUI. One
+undo step. Result: `removed` (the ids deleted) and `changed` (the scene summary). Errors:
+`last_part`, `invalid_argument`, `stale_id`.
 
 ## object_split
 
@@ -124,7 +128,7 @@ instance moved meanwhile, the job fails with `conflict` and applies nothing. Err
 
 ## mesh_edit
 
-| `op` | Arguments | |
+| `action` | Arguments | |
 |---|---|---|
 | `simplify` (job) | `target_ratio` (0..1, default 0.5) \| `target_facets` \| `max_error_mm` | Quadric edge collapse on every volume of the targets (or the given parts). |
 | `repair` (job) | | CGAL repair of solid parts: holes, orientation, self-intersections. Returns per-volume statistics. |

@@ -1,7 +1,8 @@
 # Modifier bodies and height ranges
 
-Tools: `modifier_add`, `modifier_update`, `modifier_delete`, `layer_range`
-(source `src/slic3r/Mcp/tools/ToolsModifiers.cpp`, tests `tests/mcp/test_modifiers.py`).
+Tools: `modifier_add`, `modifier_update`, `layer_range`
+(source `src/slic3r/Mcp/tools/ToolsModifiers.cpp`, tests `tests/mcp/test_modifiers.py`). Bodies are
+deleted with the general `delete` tool ([below](#deleting-a-body)).
 
 They cover the object list's context menu: Add Part, Add Negative Part, Add Modifier, Add Support
 Blocker, Add Support Enforcer, Add Precise Seam (its six volume types), and Height Range Modifier.
@@ -73,10 +74,14 @@ SVG volumes cannot become blockers/enforcers), `name`, `filament`, `place` (`cen
 `scale` `[x,y,z]` relative to its mesh. What is not given is kept; a rotation-only change keeps the
 centre. One undo step. Result as `modifier_add`.
 
-## modifier_delete
+## Deleting a body
 
-`targets`: volume ids. An object must keep one solid part (`last_part`); volumes of a cut object are
-refused (the GUI asks how to handle the cut information). One undo step. Result: `deleted`, `changed`.
+There is no separate modifier delete tool: modifiers, negative parts, blockers, enforcers, seam
+bodies and parts are deleted with `delete` ([tools-objects.md](tools-objects.md#delete)), whose
+`targets` take object, instance and volume ids alike. An object must keep one solid part
+(`last_part`); parts and negative parts of a cut object with connectors are refused one by one
+(`invalid_argument`). One undo step. Result: `removed` (the ids deleted) and `changed` (the scene
+summary).
 
 ## layer_range
 
@@ -96,6 +101,7 @@ to its modifiers (a note says so). One undo step per call. Result: `layer_ranges
 
 ## Test-only tools
 
-With debug tools enabled (`ORCA_MCP_DEBUG_TOOLS=1`, the test harness) the group also registers
-`debug_settings_project` (save/load a 3MF) and `debug_settings_ui` (object list rows, selector texts,
-filament colours), used by the tests to check round trips and what the window shows.
+With debug tools enabled (`ORCA_MCP_DEBUG_TOOLS=1`, the test harness) the settings-edit group
+registers `debug_settings_ui` (object list rows, selector texts, filament colours), used by the tests
+to check what the window shows. 3MF round trips are tested with the real tools: `project_save` with
+`copy: true`, then `project_open`.

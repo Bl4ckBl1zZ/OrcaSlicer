@@ -4,7 +4,11 @@ Source: `src/slic3r/Mcp/tools/ToolsProject.cpp` (helpers in `tools/edit/`). Test
 
 Every question the GUI asks on these paths is an argument here. A question no argument covers is
 answered with its non-destructive button and the call fails with `dialog_blocked`, quoting it.
-All paths go through the file policy (`app_status.read_roots` / `write_roots`).
+All paths go through the file policy (`app_status.read_roots` / `write_roots`): absolute paths on a
+local drive only; UNC, device, alternate-stream and reserved-name paths are refused before any disk
+access (`path_denied` with `details.reason`), writes need an existing folder and never go through a
+symbolic link. See [README](README.md#file-paths). Names (`project_new` `name`) must not contain
+control characters (`invalid_argument`, `details: {argument, position}`).
 
 ## project_new
 
@@ -30,8 +34,27 @@ the file). Ids are new afterwards. Not undoable.
 | Argument | Type | Default | |
 |---|---|---|---|
 | `path` | string (required) | | `.3mf` inside a read root. |
-| `on_unsaved`, `save_path`, `overwrite` | | | As in `project_new`. |
-| `trust_embedded_gcode` | boolean | false | Accept presets in the file that carry custom G-code. Without it the "Modified G-code" / "Customized Preset" question fails the call with `dialog_blocked`. |
+| `on_unsaved`, `save_path`, `overwrite` | | | As in `project_new`; `on_unsaved` also decides about unsaved preset edits (below). |
+| `trust_embedded_gcode` | boolean | false | Accept presets in the file that carry custom G-code. Needs the user's "Allow the agent to edit G-code settings" preference (`mcp_allow_gcode_edit`); without it `true` fails at once with `forbidden_key`. |
+
+Unsaved preset edits (process, filament, printer): opening a project replaces them, and the GUI would
+ask "Load project: unsaved changes". Here `on_unsaved` decides before anything is loaded: `fail`
+(default) fails with `unsaved_changes`, `details.presets` listing the edits per preset type (secrets
+redacted, as everywhere); `discard` and `save` drop them, with a note listing what was dropped (with
+`save` the project file just written holds them). To keep them as presets, `preset_save` first.
+
+Embedded custom G-code: without `trust_embedded_gcode` the G-code question ("Modified G-code" /
+"Customized Preset") is shown to the agent even if the user ticked "don't show again". If it comes
+up, the application has already loaded the presets, so the load is undone: the call fails with
+`untrusted_gcode`, `details: {path, questions}` (the question quoted), and an **empty project**
+remains. Check the G-code, then repeat with `trust_embedded_gcode: true` (which needs the
+preference above).
+
+Post-processing scripts: `post_process` is a program run on export, so a project opened through MCP
+never brings one, trusted G-code or not. When the process preset's `post_process` differs after the
+load, it is cleared (it shows as an unsaved edit of the process preset) and a note says so; scripts
+the user's preset already had stay. If clearing fails, the load is undone (empty project) and the
+call fails with `internal`.
 
 Questions answered: "unsaved changes - save?" (after `on_unsaved` was applied: No), "Newer 3MF
 version" and "Load 3MF" notices (informational, returned in `dialogs`), the old infill rotation
@@ -44,8 +67,8 @@ problem.)
 
 Result: `{"ok": true, "changed": <scene summary>}`.
 
-Errors: `path_denied`, `not_found`, `unsaved_changes`, `no_path`, `load_failed` (with the
-application's error text), `dialog_blocked`.
+Errors: `path_denied`, `not_found`, `unsaved_changes`, `no_path`, `forbidden_key`,
+`untrusted_gcode`, `load_failed` (with the application's error text), `dialog_blocked`, `internal`.
 
 ## project_save
 
@@ -101,10 +124,20 @@ Errors: `path_denied` (outside the roots or an unsupported type), `not_found`, `
 | `overwrite` | boolean | false | |
 
 - `3mf` is a copy of the project (`project_save` with `copy: true`).
-- `gcode` copies the plate's sliced G-code. The user's post-processing scripts are not run for
-  this export (the GUI runs them on its own export path, which needs a file dialog).
-- `gcode_3mf` writes what File > Export > Export plate sliced file writes.
+- `gcode` copies the plate's sliced G-code (one plate per file; `plate: "all"` is refused). The
+  user's post-processing scripts are not run for this export (the GUI runs them on its own export
+  path, which needs a file dialog); a note says so when the print preset has any.
+- `gcode_3mf` writes what File > Export > Export plate sliced file writes; `plate: "all"` exports
+  every plate with a printable object. Statistics are included when the application setting
+  `export_statistics` is on.
+- The G-code kinds are the slice group's writer (`Slice::export_gcode` in `ToolsSlice.cpp`): every
+  exported plate must have a current slice result, else `not_sliced` (`details.state` says why, e.g.
+  `invalidated` after a change) or `busy_slicing`. See [tools-slice.md](tools-slice.md).
 
-Result: `{"ok": true, "files": [{"path", "bytes"}], "path"?, "bytes"?}`.
+Result: `{"ok": true, "files": [{"path", "bytes"}], "path"?, "bytes"?}` (`path` / `bytes` when one
+file was written). The G-code kinds always write one file and add `kind`, and for `gcode` also
+`plate`, `header` (the statistics comments of the G-code) and `summary` (time, filament, layers,
+warnings of the plate, as in the `slice` result), for `gcode_3mf` `plates` (one such summary per
+exported plate).
 
 Errors: `path_denied`, `exists`, `not_sliced`, `busy_slicing`, `export_failed`, `invalid_argument`.

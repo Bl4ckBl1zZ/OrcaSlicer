@@ -7,7 +7,7 @@ undo stack; each is recorded in the journal (`history`). System presets are neve
 
 ## preset_select
 
-`type` (`process`, `printer`, `filament`), `name`, `slot` (filament), `on_unsaved`, `save_as`.
+`type` (`process`, `printer`, `filament`), `name`, `filament` (slot number, type filament), `on_unsaved`, `save_as`.
 
 The selection goes through the GUI's own path: the process tab's `select_preset`, or the sidebar's
 printer / filament-slot dropdown (the tool sets the dropdown and runs its selection handlers), so the
@@ -36,7 +36,7 @@ selects the previous preset again (with `fail` semantics); discarded edits are i
 
 ## preset_save
 
-`type`, `action` `save` (default) or `discard`, `name`, `overwrite`, `slot`.
+`type`, `action` `save` (default) or `discard`, `name`, `overwrite`, `filament`.
 
 - `save` without `name` overwrites the selected user preset; a system preset needs `name`
   (`system_preset`); an existing name fails with `name_exists` unless `overwrite: true` (never for a
@@ -44,7 +44,7 @@ selects the previous preset again (with `fail` semantics); discarded edits are i
   app's behaviour). Returns `name`, `saved_keys`, `replaced`.
 - `discard` drops the unsaved edits (`nothing_modified` when none) and returns them; history revert
   re-applies them.
-- `slot` (filament): checks that the filament tab edits that slot's preset.
+- `filament` (slot number): checks that the filament tab edits that slot's preset.
 
 ## preset_delete
 
@@ -62,7 +62,19 @@ names, inherited presets and while unsaved edits exist. History revert renames i
 
 `type`, `a`, `b` (preset names, or `@edited` = the tab's preset with unsaved edits, `@saved` = the
 selected preset as saved; default `@edited` vs `@saved`), `limit`. Returns `count` and
-`differences: [{key, a, b}]`. Read-only.
+`differences: [{key, a, b}]` (`null` when a side lacks the key). Read-only.
+
+Secrets: values of the printer's address and credentials (`printhost_apikey`, `printhost_password`,
+`printhost_user`, `printhost_port`, `printhost_cafile`, `print_host`, `print_host_webui`,
+`flashforge_serial_number`) are `"<redacted>"` (`""` when empty) wherever this group returns
+values: `preset_diff` `a` / `b`, the `unsaved_changes` details, `discarded` and the `preset_save`
+`discard` result. A redacted key still shows that it differs. These keys, `host_type` and the other
+printer-host keys cannot be set by the agent (`forbidden_key`, see
+[tools-settings-edit.md](tools-settings-edit.md)).
+
+Names (`preset_select` `save_as`, `preset_save` `name`, `preset_rename` `new_name`) must be one line
+of printable text: a control character (below 0x20, or 0x7F) fails with `invalid_argument`,
+`details: {argument, position}`.
 
 Errors: `unknown_preset`, `incompatible`, `unsaved_changes`, `system_preset`, `name_exists`,
 `nothing_modified`, `invalid_argument`.

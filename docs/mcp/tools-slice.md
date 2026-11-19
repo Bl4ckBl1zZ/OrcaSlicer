@@ -1,7 +1,8 @@
 # Slice tools
 
-`plate_validate`, `slice`, `slice_status`, `slice_cancel`, `slice_result`, `slice_export`, and the
-`preview` view of `screenshot`. Source: `src/slic3r/Mcp/tools/ToolsSlice.cpp`, helpers in
+`plate_validate`, `slice`, `slice_status`, `slice_cancel`, `slice_result`, and the
+`preview` view of `screenshot`. Writing the G-code is `export_file` with `kind` `gcode` or
+`gcode_3mf` (below). Source: `src/slic3r/Mcp/tools/ToolsSlice.cpp`, helpers in
 `src/slic3r/Mcp/tools/slice/`. Error codes: [errors.md](errors.md#slice).
 
 Plates are numbered from 1 (or `pl<N>` ids, or `"current"`). Layers are numbered from 1, as the
@@ -74,15 +75,33 @@ summary and warnings), `time_mode?` (`normal` | `silent`). All figures come from
 result (`GCodeProcessorResult`, `PrintEstimatedStatistics`), with per-feature times summed over the
 moves. Errors: `not_sliced`, `busy_slicing`.
 
-## slice_export
+Slice warnings (`slice_result` section `warnings`, and the first five in each plate summary of
+`slice`) carry the text the GUI shows for them: the G-code processor stores some warnings as keys
+(`bed_temperature_too_high_than_filament` ...), which the GUI turns into a sentence
+(`Plater::get_slice_warning_string`); the same sentence is `message` here. `code` holds the
+processor's error code when it has one (e.g. `1000C001`), otherwise the raw key when it differs
+from the text. Warnings the GUI does not show (e.g. the timelapse notice it leaves empty) are left
+out.
 
-Arguments: `kind` (`gcode` | `gcode_3mf`), `path`, `plate?` (`"all"` only for gcode_3mf),
-`overwrite?`. `gcode` copies the plate's sliced G-code (the file the preview reads) to `path`;
-post-processing scripts are not run from an agent call. `gcode_3mf` writes a sliced project with
-`Plater::export_3mf` (the strategy of File > Export > Export plate sliced file). Returns
-`{ok, kind, path, bytes, header (gcode: statistics comments of the file), summary | plates}`. Paths
-must be in `app_status.write_roots`. Errors: `not_sliced`, `busy_slicing`, `path_denied`, `exists`,
-`export_failed`. Nothing is sent to a printer.
+## G-code export: export_file
+
+There is no separate slice export tool: G-code is written by `export_file`
+([tools-project.md](tools-project.md#export_file)) with
+
+- `kind: "gcode"`: copies the plate's sliced G-code (the file the preview reads) to `path`
+  (`.gcode`). One plate per file (`plate: "all"` is refused). Post-processing scripts are not run
+  from an agent call (a note says so when the print preset has any).
+- `kind: "gcode_3mf"`: writes a sliced project with `Plater::export_3mf` (the strategy of File >
+  Export > Export plate sliced file) to a `.gcode.3mf`; `plate` may be `"all"` (every plate with a
+  printable object). Statistics are included when the application setting `export_statistics` is on.
+
+Other arguments: `plate?` (default the current plate), `overwrite?`. Every plate exported must have a
+current slice result: otherwise `not_sliced` (with the plate's `state` in `details`), or
+`busy_slicing` while it is being sliced. Returns `{ok, kind, path, bytes, files: [{path, bytes}]}`
+plus, for `gcode`, `plate`, `header` (the statistics comments of the file) and `summary` (as in the
+`slice` plate summary), and for `gcode_3mf` `plates` (one summary per exported plate). Paths must be
+in `app_status.write_roots`. Errors: `not_sliced`, `busy_slicing`, `path_denied`, `exists`,
+`export_failed`, `invalid_argument`. Nothing is sent to a printer.
 
 ## screenshot view "preview"
 
@@ -105,12 +124,13 @@ The result carries `camera` (as the editor view returns it: matrices, eye, targe
 and colour steps), `objects_in_view` (pixel position and box of each object), and `render_ms`.
 Errors: `not_sliced`, `busy_slicing`, `invalid_argument`, `gl_unavailable`.
 
-## debug_slice_fixture (test builds only)
+## debug_viewer_state (test builds only)
 
-Registered only with debug tools on. Scene set-ups the slice tests use: `add_plate`,
-`delete_plate`, `move` (object to a plate, offset from the plate centre), `set` (values into the
-edited print/printer/filament preset through its tab), `load` (a model file), `delete_object`,
-`viewer_state` (the window's preview layer range and tab).
+Registered only with debug tools on (`ORCA_MCP_DEBUG_TOOLS=1`). Read-only: the layer range and tab
+of the window's own G-code preview, and the current plate, so the tests can check that the
+offscreen preview leaves the window's viewer alone. The slice tests set up their scenes with the
+real tools (`model_import`, `plate_manage`, `object_transform`, `settings_set`, `slice`,
+`export_file`), not with fixtures.
 
 ## Examples (20 mm cube, generic printer; real output, abbreviated)
 
@@ -120,23 +140,28 @@ slice {"wait_s": 100}
    "result": {"outcome": "finished", "plates": [{"plate": 1, "id": "pl11", "state": "sliced",
      "time_s": 578.7, "time": "9m 39s", "filament_g": 4.01, "filament_m": 1.343, "cost": 0.08,
      "layers": 100, "layer_height": 0.2, "height_mm": 20.0, "filament_changes": 0,
-     "warning_count": 1, "warnings": ["bed_temperature_too_high_than_filament"], "outcome": "finished"}]}}
+     "warning_count": 1, "warnings": ["The current heatbed temperature is relatively high. The nozzle may clog ..."],
+     "outcome": "finished"}]}}
 
 slice_result {}
 → {"plate": 1, "summary": {"time_s": 578.7, "prepare_time_s": 0.8, "first_layer_time_s": 23.4,
      "filament_g": 4.01, "layers": 100, "first_layer_height": 0.2, "height_mm": 20.0,
      "travel_m": 3.48, "retractions": 201, "time_split_s": {"extrusion": 522.5, "travel": 37.6, "other": 15.8},
      "toolpath_box": {"min": [115.2, 115.2, 0.2], "max": [134.8, 134.8, 20.0]}},
-   "warnings": [{"level": "error", "message": "bed_temperature_too_high_than_filament", "code": "1000C001", "step": "gcode"}]}
+   "warnings": [{"level": "error", "message": "The current heatbed temperature is relatively high. The nozzle may clog when
+                 printing this filament in a closed environment. Please open the front door and/or remove the upper glass.",
+                 "code": "1000C001", "step": "gcode"}]}
 
 slice {}            (cube moved half off the plate)
 → error validation_failed: "Plate 1 cannot be sliced: Object \"20mm_cube.obj\" is partly outside the plate."
    details.errors[0] = {"kind": "outside_plate", "object": {"id": "o52", "name": "20mm_cube.obj"}, "instance": "i70",
                         "box": {...}, "fix": "Move it fully onto the plate or fully off it (object_transform), or scale it down."}
 
-slice_export {"kind": "gcode", "path": ".../out/benchy.gcode"}
-→ {"ok": true, "path": ".../benchy.gcode", "bytes": 4990978, "header": {"estimated printing time (normal mode)": "44m 30s", ...},
-   "summary": {"time_s": 2670.7, "filament_g": 13.27, "layers": 240, ...}}
+export_file {"kind": "gcode", "path": ".../out/benchy.gcode"}
+→ {"ok": true, "kind": "gcode", "path": ".../benchy.gcode", "plate": 1, "bytes": 4990978,
+   "header": {"estimated printing time (normal mode)": "44m 30s", ...},
+   "summary": {"time_s": 2670.7, "filament_g": 13.27, "layers": 240, ...},
+   "files": [{"path": ".../benchy.gcode", "bytes": 4990978}]}
 ```
 
 Ground truth: on Benchy the reported time (2670.7 s) and weight (13.27 g) equal the G-code's own

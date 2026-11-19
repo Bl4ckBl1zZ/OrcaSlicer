@@ -34,7 +34,9 @@ false when the mesh has open edges; `shells` counts its connected pieces.
 ### overhangs
 
 Where the model faces downward, before slicing: the same test the support painting gizmo's
-"highlight overhangs" applies. Facets resting on the bed are not counted.
+"highlight overhangs" applies. Facets resting on the bed are not counted here; the `overhang`
+selector of `paint_apply` and the `overhang` screenshot overlay do include them (as the gizmo's
+"by angle" fill), so their areas can be larger by the footprint.
 
 ```
 mesh_query {"kind": "overhangs", "targets": ["o57"], "threshold_deg": 45}

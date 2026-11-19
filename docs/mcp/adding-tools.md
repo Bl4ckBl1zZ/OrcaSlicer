@@ -65,7 +65,7 @@ written to the log: check the log when the endpoint does not come up.
 |---|---|
 | `name` | `snake_case`, grouped by prefix (`object_`, `plate_`, `slice_` ...). |
 | `description` | Starts with the words an agent would search for. Says what is returned and when another tool is the better choice. At most 4000 characters; clients load descriptions on demand, so be complete rather than terse. |
-| `input_schema` | An object schema with `"additionalProperties": false`, so a misspelt argument is an error. Give every argument a `description` unless its name says it all, and a `default` where there is one. |
+| `input_schema` | An object schema with `"additionalProperties": false`, so a misspelt argument is an error. Give every argument a `description` unless its name says it all, and a `default` where there is one. Use the shared argument names ([README](README.md#conventions)): `targets` for several items, `target` for exactly one, `object` for the parent of something new, `action` for a sub-command, `filament` for a 1-based filament slot, `plate` for a plate. Before adding a tool, check whether it is a new `action` or `kind` of an existing one (deleting is `delete`, writing files is `export_file`). |
 | `read_only` | The call changes nothing in the application. Clients run read-only calls in parallel and may repeat them. |
 | `destructive` | Can discard or overwrite existing work (delete, replace the project, undo). |
 | `idempotent` | Repeating the call with the same arguments changes nothing more. Clients may repeat an idempotent call after a dropped connection. |
@@ -220,8 +220,10 @@ disk. They return the canonical path or fail with `path_denied`, `not_found` or 
 
 No tool may reach the network agent, cloud login, device manager or the Bambu bridge; send or
 upload a print; install, enable or run plugins; or change preferences other than the MCP section.
-Settings that run code or hold credentials (`post_process`, `print_host*`, `printhost_*`,
-plugin-backed options) are read-only, with secrets redacted; G-code text settings are writable only
+Settings that run code or hold the printer's address or credentials (`post_process`, `print_host`,
+`print_host_webui`, `printhost_*`, `host_type`, `flashforge_serial_number`, plugin-backed options)
+are read-only (`Settings::write_refusal`), with secrets redacted (`Settings::value_json_for`, which
+every tool returning setting values must use); G-code text settings are writable only
 when the user allowed it.
 
 ## Tests
@@ -235,6 +237,13 @@ One file per group: `tests/mcp/test_<group>.py`. The session fixtures start one 
   `client.call("name", {...}, progress=True)` returns everything (images, progress, raw result).
 - The instance is shared: leave the scene as you found it (`history` undo), or start your own
   with the `launch_app` fixture (`launch_app("mygroup", files=[...])`).
+- Set up scenes with the real tools, the way an agent would: `model_import`, `object_transform`,
+  `plate_manage`, `settings_get` / `settings_set`, `slice`, `export_file`, and `project_save`
+  (`copy: true`) + `project_open` for 3MF round trips. There are no fixture tools. The `debug_*`
+  tools (registered with `ORCA_MCP_DEBUG_TOOLS=1`) only inspect or poke the window where no real
+  tool can: `debug_echo`, `debug_sleep`, `debug_job`, `debug_dialog`, `debug_ui`, `debug_stats`,
+  `debug_touch`, `debug_window`, `debug_viewer_state`, `debug_settings_ui`, `debug_paint_gizmo`,
+  `debug_paint_3mf`. Mark such a tool `debug_only = true` and name it `debug_<what>`.
 - Test the failures as carefully as the successes: every error code a tool can return, the hint
   text an agent would act on, and for every mutating tool that one undo restores `scene_get`
   exactly.

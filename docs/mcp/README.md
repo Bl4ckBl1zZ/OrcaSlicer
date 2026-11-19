@@ -87,17 +87,48 @@ are used only for malformed requests, unknown methods and tools, and bad protoco
 | Control | Behaviour |
 |---|---|
 | Off by default | Nothing listens until the user enables the server. |
-| Loopback only | Bound to `127.0.0.1`. |
-| Access token | 32 random bytes. Required on every request as `Authorization: Bearer`; compared in constant time; a wrong or missing token gets `401` with no detail. |
+| Loopback only | Bound to `127.0.0.1`. On Windows the port is claimed with `SO_EXCLUSIVEADDRUSE`, so no other process can bind the same address and port (not even with `SO_REUSEADDR`) to take over or share it; if the exclusive claim fails the server does not start and the status line gives the reason. |
+| Access token | 32 random bytes from OpenSSL's secure random generator (`RAND_bytes`), URL-safe base64 (43 characters). There is no fallback to a weaker generator: if it fails, the server does not start (and Regenerate keeps the old token). A token shorter than 32 characters is never used: a short stored token is replaced by a new one, and a short `ORCA_MCP_TOKEN` is ignored (logged) in favour of the stored token. Required on every request as `Authorization: Bearer`; compared in constant time; a wrong or missing token gets `401` with no detail. |
 | `Origin` | Any request carrying an `Origin` header is rejected with `403`: native clients send none, web pages always do. No CORS headers are ever sent and preflight requests are not answered. |
 | `Host` | Must be `127.0.0.1:<port>` or `localhost:<port>`, which defeats DNS rebinding. |
 | Method and type | `POST` with `Content-Type: application/json` only. |
-| Limits | 8 MB request body, 200 requests per second, 32 connections. |
-| Files | Tools read only from the configured read folders (default: Documents, Downloads, Desktop and the workspace) and write only into the write folders (default: the workspace `<data folder>/mcp/workspace`), never over an existing file unless asked to. Configuration keys `mcp_read_roots`, `mcp_write_roots` (`;`-separated). |
+| Limits | 8 MB request body, 200 requests per second, 32 connections. A body that nests arrays or objects deeper than 64 levels is refused before it is parsed (JSON-RPC `-32700`, HTTP 400). |
+| Files | Tools read only from the configured read folders (default: Documents, Downloads, Desktop and the workspace) and write only into the write folders (default: the workspace `<data folder>/mcp/workspace`), never over an existing file unless asked to. Configuration keys `mcp_read_roots`, `mcp_write_roots` (`;`-separated). See [File paths](#file-paths). |
+| Printer secrets | `printhost_apikey`, `printhost_password`, `printhost_user`, `printhost_port`, `printhost_cafile`, `print_host`, `print_host_webui` and `flashforge_serial_number` are never returned: every read gives `"<redacted>"` when set (`""` when empty), including `preset_diff`, the unsaved edits listed by `unsaved_changes` / `discarded`, and the old and new values `settings_set` reports. They, `host_type` and the other printer-host keys cannot be written (`forbidden_key`). |
+| Projects | `project_open` never brings custom G-code without the user's G-code permission (`untrusted_gcode`, see [tools-project.md](tools-project.md#project_open)), and always removes post-processing scripts (`post_process`) a project would add. |
 | Never exposed | Printer communication, cloud login, the network plug-in, the plug-in system, preferences other than this section. |
 
 The model is: other users of the computer and web pages in the user's browser must not be able to
 use the server. Software already running as the user can read the token file and is out of scope.
+
+### File paths
+
+Every path a tool reads or writes (`Files::check_read` / `check_write` in `McpFiles.cpp`) is
+checked in three steps, and a refusal is `path_denied` (or `not_found`, `exists`):
+
+1. **The text alone, before anything touches the disk** (`check_path_text`). Only absolute paths
+   on a local drive are accepted (`C:\...` on Windows, `/...` elsewhere). Refused with
+   `details.reason`:
+
+   | `reason` | Refused |
+   |---|---|
+   | `unc` | Network and device paths: `\\server\share`, `\\?\...`, `\\.\...` (Windows would contact the server as soon as the path is looked at). |
+   | `control_character` | A character below 0x20 or 0x7F (DEL). |
+   | `relative` | A relative path. |
+   | `stream` | Windows: a `:` other than after the drive letter (alternate data streams). |
+   | `trailing_dot_or_space` | Windows: a folder or file name ending in `.` or a space, which Windows silently drops. |
+   | `device_name` | Windows: a reserved device name as a folder or file name, whatever the extension: `CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9` (also with superscript 1-3), `CONIN$`, `CONOUT$` (`nul.3mf` is refused). |
+
+2. **Lexically inside an allowed folder** (`.` and `..` resolved without the file system), with an
+   accepted extension. Otherwise `path_denied` with `details.allowed` (the folders) or
+   `details.extensions`.
+3. **Resolved** (links and junctions followed) and still inside an allowed folder:
+   - read: the file must exist and be a regular file, else `not_found`;
+   - write: the parent folder must exist (`path_denied`, "the folder ... does not exist"); the
+     target must not be a symbolic link (the agent never writes through a link) or a folder; an
+     existing file needs `overwrite: true` (`exists`); and whatever the configured folders say,
+     nothing is written into the application's data folder or installation folder (the workspace
+     excepted).
 
 ## Working with the user
 
@@ -119,7 +150,9 @@ Calls run on the application's main thread, one at a time, between the user's ow
 - Millimetres, degrees, seconds, grams. Colours are `#RRGGBB`. Z is up; the bed is the plane z = 0.
 - Ids: `o<N>` object, `i<N>` instance, `v<N>` volume (part, modifier, blocker ...), `pl<N>` plate.
   They are stable for the session, survive undo and redo, and change when a project is loaded.
-  Plates are also addressed by their 1-based number or `"current"`; filament slots are 1-based.
+- Numbering is 1-based everywhere: plates (also addressed by `pl<N>` or `"current"`), filament
+  slots and layers (as the preview's layer slider counts them). A filament slot argument is always
+  named `filament`; 0 on a part or modifier means "the object's filament".
 - Objects and instances are positioned in the frame of their plate (world coordinates minus the
   plate origin). `center` is the centre of the bounding box in XY, `z_min` its lowest point.
 - Volumes are positioned in the frame of their object; `center_rel` is 0..1 across the object's
@@ -128,21 +161,54 @@ Calls run on the application's main thread, one at a time, between the user's ow
   tools accept `if_rev` and fail with `conflict` if the scene moved on.
 - Camera: azimuth 0 looks from the front (from -Y towards +Y) and increases counter-clockwise seen
   from above; elevation 0 is horizontal, 90 looks straight down.
+- Argument names: `targets` is a list of several items a tool acts on, `target` exactly one item,
+  and `object` the parent of something new (the object a modifier or height range is added to).
+  `action` selects the sub-command of a tool that has several (`history`, `mesh_edit`,
+  `paint_apply`, `layer_range`, `filament_edit`, `plate_manage` ...); `kind` selects what a query
+  or export produces (`mesh_query`, `export_file`).
+- Names and messages the agent gives must be one line of printable text: a control character
+  (below 0x20, or 0x7F) fails with `invalid_argument`, `details: {argument, position}` (the byte
+  offset), because these texts end up in G-code comments, file headers and the UI. This applies to
+  `name` of `object_update`, `object_add_primitive`, `object_merge`, `modifier_add`,
+  `modifier_update`, `plate_manage`, `project_new` and `preset_save`; `save_as` of
+  `preset_select`; `new_name` of `preset_rename`; `message` of `plate_layer_events`.
+- Paths are absolute paths on a local drive inside the allowed folders ([File paths](#file-paths)).
 
 ## Tools
 
-One reference page per tool group:
+48 tools, one reference page per tool group:
 
 | Group | Tools | Page |
 |---|---|---|
 | Core | `app_status`, `history`, `job_status`, `job_cancel` | [tools-core.md](tools-core.md) |
 | Scene | `scene_get`, `object_update` | [tools-scene.md](tools-scene.md) |
+| Project | `project_new`, `project_open`, `project_save`, `model_import`, `export_file` | [tools-project.md](tools-project.md) |
+| Objects | `object_add_primitive`, `object_transform`, `object_duplicate`, `delete`, `object_split`, `object_merge`, `object_cut`, `object_arrange`, `object_orient`, `mesh_edit` | [tools-objects.md](tools-objects.md) |
+| Modifiers | `modifier_add`, `modifier_update`, `layer_range` | [tools-modifiers.md](tools-modifiers.md) |
+| Plates | `plate_manage` | [tools-plates.md](tools-plates.md) |
 | Mesh | `mesh_query` | [tools-mesh.md](tools-mesh.md) |
 | Settings | `settings_search`, `settings_get`, `preset_list`, `filament_list` | [tools-settings.md](tools-settings.md) |
-| View | `screenshot` | [tools-view.md](tools-view.md) |
+| Setting edits | `settings_set` | [tools-settings-edit.md](tools-settings-edit.md) |
+| Presets | `preset_select`, `preset_save`, `preset_delete`, `preset_rename`, `preset_diff` | [tools-presets.md](tools-presets.md) |
+| Filaments | `filament_edit` | [tools-filaments.md](tools-filaments.md) |
+| Paint | `paint_apply`, `paint_get`, `plate_layer_events` | [tools-paint.md](tools-paint.md) |
+| Slice | `plate_validate`, `slice`, `slice_status`, `slice_cancel`, `slice_result` | [tools-slice.md](tools-slice.md) |
+| Analysis | `slice_layers`, `analyze` | [tools-analysis.md](tools-analysis.md) |
+| View | `screenshot` (views `editor`, `preview`; overlays) | [tools-view.md](tools-view.md) |
 
-[tools.md](tools.md) is the complete reference, generated from the registry
-(`tests/mcp/gen_tool_reference.py`); `tools/list` is the authority on what a build offers.
+There is one tool per verb across groups: everything is deleted with `delete` (objects, instances,
+parts, modifiers and other bodies) and every file other than the project is written with
+`export_file` (STL, OBJ, 3MF copy, G-code, `.gcode.3mf`).
+
+With `ORCA_MCP_DEBUG_TOOLS=1` test builds also register `debug_*` tools for the test-suite (never
+needed by an agent): `debug_echo`, `debug_sleep`, `debug_job`, `debug_dialog`, `debug_ui`,
+`debug_stats`, `debug_touch`, `debug_window`, `debug_viewer_state` (read-only: the window's G-code
+preview state), `debug_settings_ui`, `debug_paint_gizmo`, `debug_paint_3mf`. They inspect the
+window; tests set up their scenes with the real tools above.
+
+[tools.md](tools.md) is a reference generated from the registry (`tests/mcp/gen_tool_reference.py`
+against a running build; regenerate it when tools change, as the copy in the tree may lag);
+`tools/list` is the authority on what a build offers.
 
 ## Build and environment
 
@@ -155,7 +221,7 @@ start-up, nothing is saved):
 |---|---|
 | `ORCA_MCP_ENABLE=1` / `0` | Force the server on or off. |
 | `ORCA_MCP_PORT=<n>` | Port; `0` picks any free port, reported in `endpoint.json`. |
-| `ORCA_MCP_TOKEN=<token>` | Use this token instead of the stored one. |
+| `ORCA_MCP_TOKEN=<token>` | Use this token instead of the stored one. It must have at least 32 characters; a shorter one is ignored (with a warning in the log) and the stored token is used. |
 | `ORCA_MCP_ROOTS=<a;b>` | Extra folders tools may read from and write to. |
 | `ORCA_MCP_ENDPOINT_FILE=<path>` | Write a second copy of `endpoint.json` there. |
 | `ORCA_MCP_DEBUG_TOOLS=1` | Also register the `debug_*` tools the test-suite uses. |
