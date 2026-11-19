@@ -118,10 +118,7 @@ std::string number_text(const json& value)
     // Integers without a fraction, floats in shortest form: what the profile files contain.
     if (value.is_number_integer())
         return std::to_string(value.get<long long>());
-    std::ostringstream out;
-    out.precision(15);
-    out << value.get<double>();
-    return out.str();
+    return number_to_text(value.get<double>());
 }
 
 [[noreturn]] void invalid_value(const std::string& key, const json& value, const std::string& expected, json details = nullptr)
@@ -183,9 +180,8 @@ std::string element_text(const ConfigOptionDef& def, const std::string& key, Con
             std::string text = value.get<std::string>();
             if (!text.empty() && text.back() == '%')
                 text.pop_back();
-            char*        end = nullptr;
-            const double number = std::strtod(text.c_str(), &end);
-            if (!text.empty() && end != nullptr && *end == '\0') {
+            double number = 0.;
+            if (parse_number(text, number)) {
                 check_range(def, key, number, value);
                 return text + "%";
             }
@@ -200,9 +196,8 @@ std::string element_text(const ConfigOptionDef& def, const std::string& key, Con
             const bool  percent = !text.empty() && text.back() == '%';
             if (percent)
                 text.pop_back();
-            char* end = nullptr;
-            std::strtod(text.c_str(), &end);
-            if (!text.empty() && end != nullptr && *end == '\0')
+            double number = 0.;
+            if (parse_number(text, number))
                 return text + (percent ? "%" : "");
         }
         invalid_value(key, value, "a number (absolute value) or a percentage string such as \"50%\"");

@@ -19,6 +19,9 @@
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/thread.hpp>
+
+#include "libslic3r/Thread.hpp"
 
 #include "McpUtil.hpp"
 
@@ -544,7 +547,8 @@ struct HttpServer::Impl
     net::io_context                     io { 1 };
     std::shared_ptr<Shared>             shared;
     tcp::acceptor                       acceptor;
-    std::thread                         thread;
+    // Slic3r::create_thread: a 16 MB stack, like libslic3r's workers (std::thread gets 512 KB on macOS).
+    boost::thread                       thread;
     std::vector<std::weak_ptr<Session>> sessions;
     bool                                running { false };
 
@@ -642,7 +646,7 @@ bool HttpServer::start(std::string& error)
     impl.shared->stopping.store(false);
     impl.accept();
     impl.running = true;
-    impl.thread = std::thread([&impl]() {
+    impl.thread = create_thread([&impl]() {
         try {
             impl.io.run();
         } catch (const std::exception& e) {
