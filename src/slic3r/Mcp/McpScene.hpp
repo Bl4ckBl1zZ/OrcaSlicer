@@ -41,8 +41,13 @@ json object_json(int obj_idx, Detail detail = Detail::Normal, int plate_idx = -1
 json instance_json(int obj_idx, int inst_idx, Detail detail = Detail::Normal);
 // One volume: {"id", "type", "name", "filament", "facets", "overrides", ...}.
 json volume_json(const ModelObject& object, int vol_idx, Detail detail = Detail::Normal);
-// One plate without its objects: {"plate", "id", "name", "current", "locked", "sliced", "overrides"}.
+// One plate without its objects: {"plate", "id", "name", "current", "locked", "sliced", "overrides", "prime_tower"}.
 json plate_json(int plate_idx);
+// The prime tower the 3D view shows on the plate, brim included, in the plate frame:
+// {"position": [wipe_tower_x, wipe_tower_y] (the body's front-left corner), "box": {min, max}, "size",
+// "height", "source": "estimate" (the space the app reserves before slicing) | "sliced" (the real tower)}.
+// null when the plate prints no tower (prime tower off, one filament, by-object sequence, no objects).
+json prime_tower_json(int plate_idx);
 // {"name", "path", "dirty", "rev"}
 json project_json();
 // {"preset", "bed", "height", "extruders", "nozzle"}

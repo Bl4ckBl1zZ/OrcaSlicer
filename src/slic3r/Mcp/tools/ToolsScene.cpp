@@ -221,7 +221,8 @@ MCP_TOOL_GROUP(Scene)
         tool.description =
             "Scene tree of the open project: plates with their objects, instances (position, rotation, scale, bounding box, whether outside the "
             "plate), parts and modifiers (type, filament, size, per-part setting overrides), height ranges, paint summary, plus the project, "
-            "printer, process preset and filaments. Positions are in mm in the frame of the object's plate. detail \"summary\" gives counts "
+            "printer, process preset and filaments. Each plate has prime_tower (null when the plate has none): position (wipe_tower_x/y), "
+            "box and size of the footprint including the brim, height, and source \"estimate\" or \"sliced\". Positions are in mm in the frame of the object's plate. detail \"summary\" gives counts "
             "only, \"normal\" the full tree, \"full\" adds matrices, per-volume boxes and mesh statistics. Restrict with `plate` or `objects`; "
             "large scenes are paged (`truncated`, `next` -> pass as `offset`). The ids returned here are what every other tool takes.";
         tool.input_schema = Schema::parse(R"JSON({

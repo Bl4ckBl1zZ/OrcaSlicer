@@ -161,6 +161,12 @@ def test_all_checks(c, sliced):
     assert abs(r["summary"]["time_s"] - summary["time_s"]) <= 1
     assert abs(r["summary"]["total_weight_g"] - summary["filament_g"]) <= 0.05
     assert r["summary"]["layer_count"] == summary["layers"]
+    # Per-object masses are grams too (no more than the plate total).
+    objects = [o for o in r["summary"].get("objects", []) if o.get("mass_g")]
+    assert objects and all(o["mass_g"] <= summary["filament_g"] + 0.05 for o in objects), objects
+    # Only objects are listed as objects; the purge line goes under not_object. No internal plate id.
+    assert all(o["label_id"] >= 0 and o["name"] for o in r["summary"]["objects"]), r["summary"]["objects"]
+    assert "plate_id" not in r["summary"]
 
 
 def test_lists_are_capped(c, sliced):

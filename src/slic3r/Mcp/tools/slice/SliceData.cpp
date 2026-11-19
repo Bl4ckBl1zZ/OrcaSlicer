@@ -215,14 +215,23 @@ json object_ref_by_id(size_t object_id, const Print* print)
     return nullptr;
 }
 
+void apply_pending_changes()
+{
+    if (plater().is_background_process_update_scheduled() && !slicing_now())
+        // A change is waiting for the 0.5 s background-process timer: apply it now, as the timer would.
+        plater().update(false, true);
+}
+
 bool plate_has_result(int plate_idx)
 {
+    apply_pending_changes();
     PlateHandles h = handles(plate_idx);
     return h.plate != nullptr && h.plate->is_slice_result_valid() && h.result != nullptr && !h.result->moves.empty();
 }
 
 json plate_state(int plate_idx)
 {
+    apply_pending_changes();
     PlateHandles h = handles(plate_idx);
     json         out = json::object();
     out["plate"] = plate_idx + 1;
@@ -270,9 +279,8 @@ json validation(int plate_idx, bool refresh, bool& has_errors)
     json         warnings = json::array();
     const bool   is_current = plate_idx == current_plate();
 
-    if (is_current && refresh && plater().is_background_process_update_scheduled() && !slicing_now())
-        // A change is waiting for the 0.5 s background-process timer: apply it now, as the timer would.
-        plater().update(false, true);
+    if (is_current && refresh)
+        apply_pending_changes();
 
     // Objects on this plate and whether they stick out.
     int printable = 0;
@@ -656,10 +664,11 @@ json result_json(int plate_idx, const std::set<std::string>& sections, const std
             if (matches == 1)
                 j["id"] = Ids::of(*match);
             const auto total = om.total();
-            j["weight_g"] = round_to(total.mass, 2);
+            // ObjectMass is in mg (mm³ at g/cm³), as GCodeStatistics notes.
+            j["weight_g"] = round_to(0.001 * total.mass, 2);
             j["volume_mm3"] = round_to(total.volume, 1);
             if (k < r.support_masses.size())
-                j["support_g"] = round_to(r.support_masses[k].total().mass, 2);
+                j["support_g"] = round_to(0.001 * r.support_masses[k].total().mass, 2);
             BoundingBoxf3 b = om.box;
             if (b.defined) {
                 b.min -= origin; b.max -= origin;

@@ -63,6 +63,33 @@ json placements(const std::set<int>& only_plates)
     return out;
 }
 
+// Instances that are on no plate (PartPlateList::find_instance gives -1): (object index, instance index).
+std::vector<std::pair<int, int>> off_plate_instances()
+{
+    std::vector<std::pair<int, int>> out;
+    const Model& m = model();
+    for (int o = 0; o < static_cast<int>(m.objects.size()); ++o)
+        for (int i = 0; i < static_cast<int>(m.objects[static_cast<size_t>(o)]->instances.size()); ++i)
+            if (Ids::plate_of_instance(o, i) < 0)
+                out.emplace_back(o, i);
+    return out;
+}
+
+json off_plate_json(const std::vector<std::pair<int, int>>& items)
+{
+    json         out = json::array();
+    const Model& m = model();
+    for (const auto& [o, i] : items) {
+        const ModelObject* object = m.objects[static_cast<size_t>(o)];
+        out.push_back(json::object({{"object", Ids::of(*object)},
+                                    {"name", object->name},
+                                    {"instance", Ids::of(*object->instances[static_cast<size_t>(i)])}}));
+        if (out.size() >= 200)
+            break;
+    }
+    return out;
+}
+
 void find_instance(size_t object_id, size_t instance_id, ModelObject*& object, ModelInstance*& instance, int& obj_idx)
 {
     object = nullptr;
@@ -93,11 +120,15 @@ json start_arrange(ToolContext& ctx)
     PartPlateList&    list = plates();
     const std::string scope = ctx.arg("scope", "plate");
     const int         plate_idx = Ids::plate(ctx.has("plate") ? ctx.args()["plate"] : json(), "plate");
+    const bool        include_off_plate = scope == "plate" && ctx.arg<bool>("include_off_plate", false);
+    if (ctx.has("include_off_plate") && scope != "plate" && ctx.arg<bool>("include_off_plate", false))
+        ctx.note("include_off_plate applies to scope \"plate\"; scope \"all\" always packs instances that are on no plate.");
+    const std::vector<std::pair<int, int>> off_before = off_plate_instances();
     if (scope == "plate") {
         if (list.get_plate(plate_idx)->is_locked())
             fail("plate_locked", "Plate " + std::to_string(plate_idx + 1) + " is locked; arrange leaves locked plates alone.",
                  "Unlock it with plate_manage action \"unlock\" first.", json::object({{"plate", plate_idx + 1}}));
-        if (list.get_plate(plate_idx)->empty())
+        if (list.get_plate(plate_idx)->empty() && !(include_off_plate && !off_before.empty()))
             fail("nothing_to_arrange", "Plate " + std::to_string(plate_idx + 1) + " has no objects.", "Choose a plate with objects, or scope \"all\".");
     } else if (model().objects.empty())
         fail("nothing_to_arrange", "The project has no objects.", "Import or add objects first.");
@@ -116,12 +147,41 @@ json start_arrange(ToolContext& ctx)
         settings.avoid_extrusion_cali_region = ctx.arg<bool>("avoid_calibration_region", true);
     if (ctx.has("align_to_y"))
         settings.align_to_y_axis = ctx.arg<bool>("align_to_y", false);
+    else if (ctx.has("allow_rotation") && !ctx.arg<bool>("allow_rotation", false))
+        settings.align_to_y_axis = false; // "no rotation" means no turn at all, also not the align-to-Y turn (on for BBL printers)
+    const json settings_used = {{"spacing", settings.distance},
+                                {"allow_rotation", settings.enable_rotation},
+                                {"multi_material_same_plate", settings.allow_multi_materials_on_same_plate},
+                                {"avoid_calibration_region", settings.avoid_extrusion_cali_region},
+                                {"align_to_y", settings.align_to_y_axis}};
 
     const int prev_state = p.get_prepare_state();
     const int prev_plate = list.get_curr_plate_index();
     ctx.snapshot(scope == "plate" ? "arrange plate " + std::to_string(plate_idx + 1) : std::string("arrange all plates"));
     if (scope == "plate" && plate_idx != prev_plate)
         p.select_plate(plate_idx);
+    if (include_off_plate && !off_before.empty()) {
+        // Bring every instance that is on no plate onto the plate's centre (part of the same undo
+        // step); the arrange then counts them as the plate's own (it takes what touches the plate).
+        const Vec3d centre = plate_center(plate_idx);
+        Model&      m = model();
+        std::set<int> moved;
+        for (const auto& [o, i] : off_before) {
+            ModelObject*        object = m.objects[static_cast<size_t>(o)];
+            const BoundingBoxf3 box = object->instance_bounding_box(static_cast<size_t>(i));
+            ModelInstance*      inst = object->instances[static_cast<size_t>(i)];
+            inst->set_offset(inst->get_offset() + Vec3d(centre.x() - box.center().x(), centre.y() - box.center().y(), 0.));
+            moved.insert(o);
+        }
+        for (int o : moved)
+            m.objects[static_cast<size_t>(o)]->invalidate_bounding_box();
+        refresh_structure();
+        ctx.note(std::to_string(off_before.size()) + " instance(s) that were on no plate were brought onto plate " +
+                 std::to_string(plate_idx + 1) + " for this arrange (include_off_plate).");
+    } else if (scope == "plate" && !off_before.empty())
+        ctx.note(std::to_string(off_before.size()) + " instance(s) on no plate are not part of this arrange (scope \"plate\" only "
+                 "rearranges what is already on the plate); they are listed in result.left_out. include_off_plate: true brings them "
+                 "onto the plate, scope \"all\" packs them onto plates (adding plates as needed).");
     p.set_prepare_state(scope == "plate" ? ::Slic3r::GUI::Job::JobPrepareState::PREPARE_STATE_MENU : ::Slic3r::GUI::Job::JobPrepareState::PREPARE_STATE_DEFAULT);
     p.arrange();
     ctx.set_slice_invalidated();
@@ -132,7 +192,8 @@ json start_arrange(ToolContext& ctx)
         plater().get_ui_job_worker().cancel();
     });
     Jobs::instance().update(job, 0., "Arranging");
-    watch([job, cancelled, saved, prev_state, prev_plate, plate_idx, scope]() {
+    const bool brought_in = include_off_plate && !off_before.empty();
+    watch([job, cancelled, saved, settings_used, prev_state, prev_plate, plate_idx, scope, off_before, brought_in]() {
         if (job->state != Job::State::Running)
             return true;
         Plater& pl = plater();
@@ -152,11 +213,27 @@ json start_arrange(ToolContext& ctx)
         if (scope == "plate")
             result["plate"] = plate_idx + 1;
         result["plates"] = plates().get_plate_count();
+        result["settings_used"] = settings_used;
         result["placements"] = placements(only);
+        // Instances on no plate once the arrange is done: with scope "plate" those left out of it (not
+        // brought in) and those that did not fit; with scope "all", those the arrange could not place.
+        const std::vector<std::pair<int, int>> off_after = off_plate_instances();
+        result["outside_plates"] = off_plate_json(off_after);
+        if (scope == "plate" && !brought_in)
+            result["left_out"] = off_plate_json(off_before);
         Jobs::instance().finish(job, *cancelled ? Job::State::Cancelled : Job::State::Finished, result);
         return true;
     });
-    ctx.defer(wait_for_job(job, ctx.wait_s(60., 280.)));
+    Pending pending = wait_for_job(job, ctx.wait_s(60., 280.));
+    pending.poll = [poll = pending.poll, job](ToolContext& c, json& result) {
+        if (!poll(c, result))
+            return false;
+        if (job->result.is_object() && job->result.contains("outside_plates") && !job->result["outside_plates"].empty())
+            c.note(std::to_string(job->result["outside_plates"].size()) + " instance(s) are on no plate after the arrange "
+                   "(result.outside_plates); a plate-scope arrange does not create plates, so what does not fit stays off it.");
+        return true;
+    };
+    ctx.defer(std::move(pending));
     return nullptr;
 }
 

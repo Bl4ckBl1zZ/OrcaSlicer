@@ -294,7 +294,8 @@ json plate_layer_events(ToolContext& ctx)
         if (type == CustomGCode::ToolChange) {
             if (filaments < 2)
                 fail("invalid_argument", "A filament change needs at least two filament slots; the project has " + std::to_string(filaments) + ".",
-                     "Add a filament slot (filament_edit action \"add\"), or use type \"color_change\" (M600) on a single-filament printer.",
+                     "Add a filament slot (filament_edit action \"add\") for the new colour, or use type \"pause\" with a message to swap the "
+                     "filament by hand.",
                      json::object({ { "filament_count", filaments } }));
             if (filament < 1)
                 fail("invalid_argument", "`filament` (1-based slot) is required for a filament change.");
@@ -319,16 +320,13 @@ json plate_layer_events(ToolContext& ctx)
             item.extruder = filament;
             item.color = filament <= static_cast<int>(colors.size()) ? colors[static_cast<size_t>(filament - 1)] : "";
         } else if (type == CustomGCode::ColorChange) {
-            if (filament > filaments)
-                fail("invalid_argument", "There is no filament slot " + std::to_string(filament) + "; the project has " + std::to_string(filaments) + ".");
-            item.extruder = filament > 0 ? filament : 1;
-            item.color = ctx.has("color") ? args["color"].get<std::string>() :
-                         (item.extruder <= static_cast<int>(colors.size()) ? colors[static_cast<size_t>(item.extruder - 1)] : "#FFFFFF");
-            if (!printer.has("color_change_gcode") || printer.opt_string("color_change_gcode").empty())
-                ctx.note("The printer's color_change_gcode is empty: the colour change will be marked in the G-code but no M600 is sent.");
-            if (filaments > 1)
-                ctx.note("This project has several filament slots; the app's layer slider offers filament changes (type filament_change) then. A colour "
-                         "change (M600) only applies where filament " + std::to_string(item.extruder) + " prints above it.");
+            // This app's G-code generator writes nothing for a colour change (the BBL generator removed the M600 branch, see
+            // emit_custom_gcode_per_print_z in GCode.cpp), so the print would run straight through it. Refuse it rather than accept
+            // an event that does nothing; the layer slider's notification (EmptyColorChangeCode) says the same.
+            fail("invalid_argument",
+                 "A colour change (M600) writes nothing into this app's G-code: the printer would not stop.",
+                 "To print from this layer up in another colour, add a filament slot with that colour (filament_edit action \"add\") and "
+                 "use type \"filament_change\" with that slot; to swap the spool by hand instead, use type \"pause\" with a message.");
         } else if (type == CustomGCode::PausePrint) {
             item.extra = ctx.arg("message", "");
             if (!printer.has("machine_pause_gcode") || printer.opt_string("machine_pause_gcode").empty())
@@ -414,8 +412,8 @@ void register_layer_events(ToolRegistry& registry)
     tool.title = "Colour change, pause, custom G-code at a layer";
     tool.description =
         "Events at a layer of one plate, as the layer slider's menu adds them: filament_change (switch to filament slot n at that layer - the "
-        "cheapest way to print a top in another colour; needs >= 2 slots and a plate printed with one filament), color_change (M600 on a "
-        "single-extruder printer, optional color #RRGGBB for the preview), pause (machine_pause_gcode, optional message), template (the "
+        "cheapest way to print a top in another colour; needs >= 2 slots and a plate printed with one filament), color_change (refused: "
+        "this app writes no colour-change G-code; use filament_change, or pause to swap by hand), pause (machine_pause_gcode, optional message), template (the "
         "printer's template_custom_gcode) and custom (your G-code text; only when the user allowed G-code edits in Preferences, else "
         "forbidden_key). action list | add | remove | clear; `at` is {\"z\": mm} (snapped to the layer that height falls in) or {\"layer\": n} "
         "(1-based; exact after slicing, nominal before). The event runs before that layer prints. Returns the plate's events with z, layer "

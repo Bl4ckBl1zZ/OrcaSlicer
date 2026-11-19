@@ -13,8 +13,11 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
+#include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "slic3r/GUI/3DScene.hpp"
+#include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Plater.hpp"
@@ -164,6 +167,19 @@ json vec3(double x, double y, double z)
     return json::array({round4(x), round4(y), round4(z)});
 }
 
+// Euler XYZ rotation (radians) in degrees. A turn about Z only can come out of arrange as [180, -180, a]; report it as
+// [0, 0, a'] so a reader sees a plain turn on the bed.
+static json rotation_json(const Vec3d& rotation)
+{
+    const Eigen::Matrix3d m = (Eigen::AngleAxisd(rotation.z(), Vec3d::UnitZ()) * Eigen::AngleAxisd(rotation.y(), Vec3d::UnitY()) *
+                               Eigen::AngleAxisd(rotation.x(), Vec3d::UnitX()))
+                                  .toRotationMatrix();
+    if (std::abs(rotation.x()) > 1e-9 || std::abs(rotation.y()) > 1e-9)
+        if (std::abs(m(2, 2) - 1.) < 1e-9)
+            return vec3(0., 0., std::atan2(m(1, 0), m(0, 0)) * RAD_TO_DEG);
+    return vec3(rotation.x() * RAD_TO_DEG, rotation.y() * RAD_TO_DEG, rotation.z() * RAD_TO_DEG);
+}
+
 Detail detail_from(const std::string& name)
 {
     if (name == "summary") return Detail::Summary;
@@ -271,14 +287,20 @@ json instance_json(int obj_idx, int inst_idx, Detail detail)
         out["plate"] = nullptr;
     out["center"] = json::array({round4(center.x()), round4(center.y())});
     out["z_min"] = round4(box.min.z());
-    out["rotation"] = vec3(rotation.x() * RAD_TO_DEG, rotation.y() * RAD_TO_DEG, rotation.z() * RAD_TO_DEG);
+    out["rotation"] = rotation_json(rotation);
     out["scale"] = vec3(scale.x(), scale.y(), scale.z());
     if (mirror.x() < 0 || mirror.y() < 0 || mirror.z() < 0)
         out["mirror"] = vec3(mirror.x(), mirror.y(), mirror.z());
     out["bbox"] = bbox_json(box);
     if (!instance.printable)
         out["printable"] = false;
-    out["outside_plate"] = instance.print_volume_state != ModelInstancePVS_Inside;
+    // The plate's own record, as plate_validate and slicing use it. ModelInstance::print_volume_state
+    // is checked against the first plate's volume only and lags behind moves and arranges.
+    bool outside = true;
+    if (plate_idx >= 0)
+        if (PartPlate* plate = plater().get_partplate_list().get_plate(plate_idx); plate != nullptr)
+            outside = !plate->contain_instance_totally(obj_idx, inst_idx);
+    out["outside_plate"] = outside;
     if (detail == Detail::Full) {
         const Vec3d offset = instance.get_offset();
         out["offset_world"] = vec3(offset.x(), offset.y(), offset.z());
@@ -346,6 +368,37 @@ json object_json(int obj_idx, Detail detail, int plate_idx)
     return out;
 }
 
+json prime_tower_json(int plate_idx)
+{
+    GLCanvas3D* canvas = plater().get_view3D_canvas3D();
+    PartPlate*  plate = plater().get_partplate_list().get_plate(plate_idx);
+    if (canvas == nullptr || plate == nullptr)
+        return nullptr;
+    // The 3D view loads one tower volume per plate that prints a tower, as object 1000 + plate.
+    for (const GLVolume* volume : canvas->get_volumes().volumes) {
+        if (volume == nullptr || !volume->is_wipe_tower || volume->object_idx() != 1000 + plate_idx)
+            continue;
+        const Vec3d origin = plate->get_origin();
+        BoundingBoxf3 box = volume->transformed_convex_hull_bounding_box();
+        box.translate(-origin);
+        const DynamicPrintConfig& project = wxGetApp().preset_bundle->project_config;
+        const auto* x = project.option<ConfigOptionFloats>("wipe_tower_x");
+        const auto* y = project.option<ConfigOptionFloats>("wipe_tower_y");
+        const Print* print = plate->fff_print();
+        json out = json::object();
+        if (x != nullptr && y != nullptr)
+            out["position"] = json::array({round4(x->get_at(static_cast<size_t>(plate_idx))), round4(y->get_at(static_cast<size_t>(plate_idx)))});
+        out["box"] = json::object({{"min", json::array({round4(box.min.x()), round4(box.min.y())})},
+                                   {"max", json::array({round4(box.max.x()), round4(box.max.y())})}});
+        out["size"] = json::array({round4(box.size().x()), round4(box.size().y())});
+        out["height"] = round4(box.max.z());
+        // The same test the 3D view uses to draw the real tower instead of the estimate.
+        out["source"] = print != nullptr && print->is_step_done(psWipeTower) && print->wipe_tower_data().wipe_tower_mesh_data ? "sliced" : "estimate";
+        return out;
+    }
+    return nullptr;
+}
+
 json plate_json(int plate_idx)
 {
     PartPlateList& plates = plater().get_partplate_list();
@@ -358,6 +411,7 @@ json plate_json(int plate_idx)
     out["locked"] = plate->is_locked();
     out["sliced"] = plate->is_slice_result_valid();
     out["overrides"] = plate->config() != nullptr ? config_overrides_json(*plate->config()) : json(json::object());
+    out["prime_tower"] = prime_tower_json(plate_idx);
     return out;
 }
 
@@ -390,6 +444,10 @@ json printer_json()
         out["bed"] = json::array({nominal(size.x()), nominal(size.y())});
         out["height"] = nominal(size.z());
     }
+    // The plate type of the project (the Prepare tab's plate-type selector); it drives the bed and
+    // first-layer temperatures. Plates can override it (scene_get plates[].overrides).
+    if (const ConfigOption* bed_type = bundle.project_config.option("curr_bed_type"); bed_type != nullptr)
+        out["bed_type"] = bed_type->serialize();
     if (const auto* nozzles = preset.config.option<ConfigOptionFloats>("nozzle_diameter"); nozzles != nullptr) {
         out["extruders"] = nozzles->values.size();
         json diameters = json::array();

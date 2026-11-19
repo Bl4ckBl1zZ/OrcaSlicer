@@ -42,6 +42,12 @@ bool plate_busy(int plate_idx);
 json object_ref(const ObjectBase* object);
 json object_ref_by_id(size_t object_id, const Print* print);
 
+// A scene or settings change reaches the Print only when the window's 0.5 s background-process
+// timer fires (Plater::schedule_background_process); until then the current plate still looks
+// sliced. Applies such a pending change now. plate_state and plate_has_result call it, so a tool
+// called right after an edit (e.g. a project-scope wipe_tower_x/y change) sees the plate invalidated.
+void apply_pending_changes();
+
 // {"plate", "id", "state": empty|not_sliced|slicing|sliced|invalidated|failed|cancelled, "reason"?, ...}
 json plate_state(int plate_idx);
 bool plate_has_result(int plate_idx);

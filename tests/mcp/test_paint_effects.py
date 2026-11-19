@@ -467,6 +467,9 @@ def test_layer_events(logo_app, era):
     # validation
     assert c.tool_error("plate_layer_events", action="add", at={"z": 500}, type="pause").code == "invalid_argument"
     assert c.tool_error("plate_layer_events", action="add", at={"z": 3}, type="filament_change", filament=7).code == "invalid_argument"
+    # a colour change writes no G-code in this app: refused, pointing at filament_change / pause
+    err = c.tool_error("plate_layer_events", action="add", at={"z": 3}, type="color_change", color="#FF0000")
+    assert err.code == "invalid_argument" and "filament_change" in err.hint and "pause" in err.hint
     err = c.tool_error("plate_layer_events", action="add", at={"z": 3}, type="custom", gcode="M117 hi")
     assert err.code == "forbidden_key" and "Preferences" in err.hint
 

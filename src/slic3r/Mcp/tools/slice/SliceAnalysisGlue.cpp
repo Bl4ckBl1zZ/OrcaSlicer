@@ -252,7 +252,25 @@ json summary(int plate_idx)
 {
     Entry& e = entry(plate_idx);
     nlohmann::json j = e.analysis->summary();
-    return to_plate_frame(from_basic(j), plate_idx);
+    json out = to_plate_frame(from_basic(j), plate_idx);
+    // plate_id is the slicer's internal result id, not the plate number; analyze already reports "plate".
+    out.erase("plate_id");
+    // Moves no object owns (the purge line, the wipe tower, travel between objects) come out as an object with label_id -1
+    // and no name; report them apart so the object list holds only objects.
+    if (out.contains("objects") && out["objects"].is_array()) {
+        json objects = json::array();
+        for (json& o : out["objects"]) {
+            if (o.is_object() && o.value("label_id", 0) < 0) {
+                out["not_object"] = {{"time_s", o.value("time_s", 0.)},
+                                     {"volume_mm3", o.value("volume_mm3", 0.)},
+                                     {"note", "moves no object owns: the purge line, the wipe tower, travel between objects"}};
+                continue;
+            }
+            objects.push_back(std::move(o));
+        }
+        out["objects"] = std::move(objects);
+    }
+    return out;
 }
 
 json layers(int plate_idx, int from, int to, int every, const std::vector<std::string>& columns, int limit)
