@@ -47,3 +47,23 @@ JSON-RPC errors, not tool results:
 | `-32602` | 400 (modern), 200 (legacy) | Invalid params: unknown tool, arguments not an object, missing `_meta` fields. |
 | `-32020` | 400 | Header mismatch: a mirrored header is missing or differs from the body. |
 | `-32022` | 400 | Unsupported protocol version; `data.supported` lists the versions. |
+
+## Edit
+
+Projects, import/export, objects, plates (`tools-project.md`, `tools-objects.md`, `tools-plates.md`).
+
+| Code | Meaning | What the agent should do |
+|---|---|---|
+| `unsaved_changes` | The project has unsaved changes and the call would replace it. | Pass `on_unsaved` (`save` with `save_path`, or `discard`), or `project_save` first. |
+| `no_path` | Saving needs a file name and the project has none. | Pass `path` / `save_path` inside a write root. |
+| `load_failed` | A file could not be loaded; the message quotes the application's error. | Check the file; for STEP try other `step` values. |
+| `export_failed` | Writing a file failed. | Check the folder and that no other program holds the file. |
+| `not_sliced` | G-code export needs a valid slice of the plate. | Slice first. |
+| `busy_slicing` | Slicing is running; the result is not final. | Wait (`slice_status`), then export. |
+| `plate_locked` | The plate is locked; nothing is arranged, oriented, imported or moved onto it. | `plate_manage` action `unlock`, or choose another plate. |
+| `nothing_to_arrange` | The plate (or project) has no objects to arrange or orient. | Choose another plate or pass `targets`. |
+| `not_splittable` | The mesh is one connected shell. | - |
+| `last_part` | Deleting would leave an object without a solid part. | Delete the object instead. |
+| `last_plate` | The only plate cannot be deleted. | Delete its objects instead. |
+| `limit` | Too many copies or plates. | Use fewer. |
+| `mesh_error` | A geometry operation produced nothing usable (no flat face, empty cut). | Check the arguments. |
