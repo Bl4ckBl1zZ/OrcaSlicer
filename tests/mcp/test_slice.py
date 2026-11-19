@@ -148,6 +148,9 @@ def test_slice_with_progress(m):
 
 def test_progress_streams_on_long_slice(m):
     loaded = m.tool("debug_slice_fixture", action="load", path=str(BENCHY))
+    # Fine layers: a slice of several seconds, so that several progress notifications (at most one
+    # per second) are streamed.
+    m.tool("debug_slice_fixture", action="set", values={"layer_height": "0.08"})
     try:
         r = m.call("slice", {"wait_s": 250}, progress=True)
         assert not r.is_error and r.data["status"] == "finished", r.data
@@ -157,6 +160,7 @@ def test_progress_streams_on_long_slice(m):
         texts = {p.get("message", "") for p in r.progress}
         assert len(texts) >= 2 and all(t.startswith("Slicing plate 1") for t in texts if t), texts
     finally:
+        m.tool("debug_slice_fixture", action="set", values={"layer_height": "0.2"})
         m.tool("debug_slice_fixture", action="delete_object", object=loaded["objects"][0])
 
 
@@ -176,6 +180,8 @@ def test_slice_result_sections(c):
     assert abs(s["height_mm"] - 20.0) < 0.05
     assert r["filaments"][0]["filament"] == 1
     assert abs(sum(f["weight_g"] for f in r["filaments"]) - s["filament_g"]) < 0.05
+    # Layer heights are z steps (bridge extrusions are thicker, but do not make a layer thicker).
+    assert s["min_layer_height"] <= s["layer_height"] <= s["max_layer_height"] < 2 * s["layer_height"], s
     keys = {f["key"] for f in r["features"]}
     assert {"outer_wall", "inner_wall"} <= keys, keys
     assert abs(sum(f["percent"] for f in r["features"]) - 100) < 25
@@ -234,20 +240,20 @@ def test_job_status_sees_slice_job(m):
 
 def test_object_partly_off_the_plate(m):
     cube = object_id(m, "20mm_cube")
-    m.tool("debug_slice_fixture", action="move", object=cube, plate=1, offset=[200, 0])  # beyond the right edge
+    # Straddle the right edge of the plate: half in, half out.
+    m.tool("debug_slice_fixture", action="move", object=cube, plate=1, offset=[125, 0])
     try:
         v = m.tool("plate_validate")
         assert v["ok"] is False
-        kinds = {e["kind"] for e in v["errors"]}
-        assert "outside_plate" in kinds or "empty_plate" in kinds, v
         outside = [e for e in v["errors"] if e["kind"] == "outside_plate"]
-        if outside:
-            assert outside[0]["object"]["id"] == cube
-            assert "fix" in outside[0]
+        assert outside, v
+        assert outside[0]["object"]["id"] == cube
+        assert outside[0]["instance"].startswith("i") and outside[0]["box"]
+        assert "fix" in outside[0]
         err = m.tool_error("slice")
-        assert err.code in ("validation_failed", "nothing_to_slice"), err.payload
-        if err.code == "validation_failed":
-            assert err.details["errors"][0]["fix"]
+        assert err.code == "validation_failed", err.payload
+        assert err.details["errors"][0]["kind"] == "outside_plate"
+        assert err.details["errors"][0]["fix"]
     finally:
         m.tool("history", action="undo")
     assert m.tool("plate_validate")["ok"] is True
@@ -310,6 +316,7 @@ def test_two_plates_and_nothing_to_slice(m):
 
 def test_cancel_mid_slice(m):
     loaded = m.tool("debug_slice_fixture", action="load", path=str(BENCHY))
+    m.tool("debug_slice_fixture", action="set", values={"layer_height": "0.08"})  # a slice of several seconds
     try:
         r = m.tool("slice", wait_s=0)
         assert r["status"] == "running", r
@@ -321,11 +328,13 @@ def test_cancel_mid_slice(m):
         assert st["plates"][0]["state"] in ("cancelled", "not_sliced", "invalidated"), st["plates"][0]
         assert m.tool_error("slice_result").code == "not_sliced"
     finally:
+        m.tool("debug_slice_fixture", action="set", values={"layer_height": "0.2"})
         m.tool("debug_slice_fixture", action="delete_object", object=loaded["objects"][0])
 
 
 def test_scene_change_mid_slice(m):
     loaded = m.tool("debug_slice_fixture", action="load", path=str(BENCHY))
+    m.tool("debug_slice_fixture", action="set", values={"layer_height": "0.08"})  # a slice of several seconds
     try:
         r = m.tool("slice", wait_s=0)
         assert r["status"] == "running", r
@@ -339,6 +348,7 @@ def test_scene_change_mid_slice(m):
         r2 = m.tool("slice", wait_s=250)
         assert r2["status"] == "finished"
     finally:
+        m.tool("debug_slice_fixture", action="set", values={"layer_height": "0.2"})
         m.tool("debug_slice_fixture", action="set", values={"wall_loops": "2"})
         m.tool("debug_slice_fixture", action="delete_object", object=loaded["objects"][0])
 

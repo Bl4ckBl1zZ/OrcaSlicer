@@ -170,6 +170,15 @@ json slice(ToolContext& ctx)
         if (plates.empty())
             fail("nothing_to_slice", "No plate has a printable object.", "Add or move objects onto a plate first.");
     } else {
+        if (!handles(target).plate->has_printable_instances()) {
+            // An object sticking out of the plate does not count as printable: say so rather than "empty".
+            bool has_errors = false;
+            json v = validation(target, true, has_errors);
+            for (const json& e : v["errors"])
+                if (e.value("kind", "") == "outside_plate")
+                    fail("validation_failed", "Plate " + std::to_string(target + 1) + " cannot be sliced: " + e.value("message", ""),
+                         "Fix the listed problems (each has a `fix`), then slice again.", v);
+        }
         if (!handles(target).plate->has_printable_instances())
             fail("nothing_to_slice", "Plate " + std::to_string(target + 1) + " has no printable object.",
                  "Move an object onto the plate, or mark its objects printable (object_update).", plate_state(target));

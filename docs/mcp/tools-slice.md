@@ -111,3 +111,33 @@ Registered only with debug tools on. Scene set-ups the slice tests use: `add_pla
 `delete_plate`, `move` (object to a plate, offset from the plate centre), `set` (values into the
 edited print/printer/filament preset through its tab), `load` (a model file), `delete_object`,
 `viewer_state` (the window's preview layer range and tab).
+
+## Examples (20 mm cube, generic printer; real output, abbreviated)
+
+```
+slice {"wait_s": 100}
+→ {"job": "job1", "kind": "slice", "status": "finished", "percent": 100.0, "elapsed_s": 0.8,
+   "result": {"outcome": "finished", "plates": [{"plate": 1, "id": "pl11", "state": "sliced",
+     "time_s": 578.7, "time": "9m 39s", "filament_g": 4.01, "filament_m": 1.343, "cost": 0.08,
+     "layers": 100, "layer_height": 0.2, "height_mm": 20.0, "filament_changes": 0,
+     "warning_count": 1, "warnings": ["bed_temperature_too_high_than_filament"], "outcome": "finished"}]}}
+
+slice_result {}
+→ {"plate": 1, "summary": {"time_s": 578.7, "prepare_time_s": 0.8, "first_layer_time_s": 23.4,
+     "filament_g": 4.01, "layers": 100, "first_layer_height": 0.2, "height_mm": 20.0,
+     "travel_m": 3.48, "retractions": 201, "time_split_s": {"extrusion": 522.5, "travel": 37.6, "other": 15.8},
+     "toolpath_box": {"min": [115.2, 115.2, 0.2], "max": [134.8, 134.8, 20.0]}},
+   "warnings": [{"level": "error", "message": "bed_temperature_too_high_than_filament", "code": "1000C001", "step": "gcode"}]}
+
+slice {}            (cube moved half off the plate)
+→ error validation_failed: "Plate 1 cannot be sliced: Object \"20mm_cube.obj\" is partly outside the plate."
+   details.errors[0] = {"kind": "outside_plate", "object": {"id": "o52", "name": "20mm_cube.obj"}, "instance": "i70",
+                        "box": {...}, "fix": "Move it fully onto the plate or fully off it (object_transform), or scale it down."}
+
+slice_export {"kind": "gcode", "path": ".../out/benchy.gcode"}
+→ {"ok": true, "path": ".../benchy.gcode", "bytes": 4990978, "header": {"estimated printing time (normal mode)": "44m 30s", ...},
+   "summary": {"time_s": 2670.7, "filament_g": 13.27, "layers": 240, ...}}
+```
+
+Ground truth: on Benchy the reported time (2670.7 s) and weight (13.27 g) equal the G-code's own
+comments (`44m 30s`, `13.27 g`); the tests compare them on every run.

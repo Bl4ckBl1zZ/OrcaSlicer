@@ -123,6 +123,7 @@ def test_all_checks(c, sliced):
         assert check in r, check
     assert set(r["verdicts"]) >= {"flow", "cooling", "first_layer"}
     flow = r["flow"]["filaments"][0]
+    assert flow["filament"] == 1  # slots are 1-based, as everywhere
     assert flow["max_flow"] > 0 and flow["limit"] > 0
     assert flow["max_at"]["layer"] >= 1
     fl = r["first_layer"]["objects"][0]

@@ -51,3 +51,28 @@ Arguments: `plate?`, `checks` (any of the list below), `params?` (per check), `m
 | `summary` | The core's totals, per feature, per filament, per object | - |
 | `region` | Extrusions inside `params.region.box` ({min: [x, y(, z)], max: [...]}, plate frame) | `box`, `features`, `support_only` |
 | `diff` | Changes since the plate's previous result, largest relative change first | `rel_tolerance` (0.001) |
+
+Filament slots are 1-based here too (the core's 0-based indices are shifted). Numbers are rounded to
+three decimals.
+
+## Example (20 mm cube)
+
+```
+slice_layers {"detail": "section", "z": 10}
+→ {"layer": 50, "z": 10.0,
+   "geometry": {"islands": 1, "island_area_mm2": 400.0, "perimeter_count": 3, "wall_thickness_mm": 1.192,
+                "sparse_infill_fill_ratio": 0.207,
+                "regions": [{"object_id": "o52", "infill_pattern": "crosshatch", "infill_density": 15.0, "wall_loops": 3}]},
+   "moves": {"roles": [{"role": "inner_wall", "length_mm": 147.16}, {"role": "outer_wall", "length_mm": 78.36},
+                       {"role": "sparse_infill", "length_mm": 142.801}]}}
+
+analyze {"checks": ["flow"], "max_items": 1}
+→ {"flow": {"filaments": [{"filament": 1, "limit": 12.0, "max_flow": 12.108, "ratio": 1.009, "share_at_limit": 0.069,
+              "max_at": {"layer": 2, "z": 0.4, "x": 116.381, "y": 116.361, "role": "internal_solid_infill", "object_id": "o52"}}],
+            "verdict": {"verdict": "warning", "message": "filament 1 is limited by its max volumetric speed on 6 layers (7% of its extrusion time)"}},
+   "verdicts": {"flow": "warning"}}
+```
+
+Performance (Benchy, 240 layers, this machine): the analysis is computed when the slice job ends
+(well under the 0.3 s between the slicer's completion event and the job's end); all ten checks in one
+call take about 40 ms and return about 19 KB.

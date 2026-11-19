@@ -73,6 +73,8 @@ void transform(json& doc, const Ctx& c, const std::string& parent_key)
         for (auto it = doc.begin(); it != doc.end(); ++it) {
             const std::string& k = it.key();
             json&              v = it.value();
+            if (v.is_number_float())
+                v = round_to(v.get<double>(), 3);
             if (v.is_number()) {
                 if (k == "x" || k == "cx" || k == "mean_x" || k == "wipe_tower_x")
                     v = round_to(v.get<double>() - c.ox, 3);
@@ -80,6 +82,9 @@ void transform(json& doc, const Ctx& c, const std::string& parent_key)
                     v = round_to(v.get<double>() - c.oy, 3);
                 else if (is_layer_key(k) && v.is_number_integer() && v.get<long long>() >= 0)
                     v = v.get<long long>() + 1;
+                else if ((k == "filament" || ((k == "from" || k == "to") && parent_key == "transitions")) && v.is_number_integer() &&
+                         v.get<long long>() >= 0)
+                    v = v.get<long long>() + 1; // filament slots are 1-based in every tool
                 else if (k == "object" && v.is_number_integer()) {
                     auto f = c.label_to_object.find(v.get<int>());
                     if (f != c.label_to_object.end())
@@ -92,6 +97,16 @@ void transform(json& doc, const Ctx& c, const std::string& parent_key)
             } else if ((k == "min" || k == "max") && v.is_array() && v.size() >= 2 && v[0].is_number() && v[1].is_number()) {
                 v[0] = round_to(v[0].get<double>() - c.ox, 3);
                 v[1] = round_to(v[1].get<double>() - c.oy, 3);
+            } else if ((k == "filaments" || k == "length_by_filament" || k == "flush_per_filament") && v.is_array() && !v.empty() && v[0].is_array()) {
+                for (json& pair : v)
+                    if (pair.is_array() && !pair.empty() && pair[0].is_number_integer())
+                        pair[0] = pair[0].get<long long>() + 1;
+            } else if (k == "transition_counts" && v.is_array()) {
+                for (json& entry : v)
+                    if (entry.is_array() && !entry.empty() && entry[0].is_array())
+                        for (json& f : entry[0])
+                            if (f.is_number_integer())
+                                f = f.get<long long>() + 1;
             } else if ((k == "changes_per_layer" || k == "ranges") && v.is_array()) {
                 for (json& pair : v)
                     if (pair.is_array())
@@ -104,8 +119,11 @@ void transform(json& doc, const Ctx& c, const std::string& parent_key)
         for (auto it = extra.begin(); it != extra.end(); ++it)
             doc[it.key()] = it.value();
     } else if (doc.is_array())
-        for (json& v : doc)
+        for (json& v : doc) {
+            if (v.is_number_float())
+                v = round_to(v.get<double>(), 3);
             transform(v, c, parent_key);
+        }
 }
 
 Ctx context_for(int plate_idx)

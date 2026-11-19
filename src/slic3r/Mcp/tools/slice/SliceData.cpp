@@ -484,7 +484,7 @@ MoveAgg aggregate(const GCodeProcessorResult& r, int mode)
             ra.volume_mm3 += len * m.mm3_per_mm;
             agg.extrusion_box.merge(m.position.cast<double>());
             agg.max_z = std::max(agg.max_z, static_cast<double>(m.position.z()));
-            layer_height[m.layer_id] = std::max(layer_height[m.layer_id], static_cast<double>(m.height));
+            layer_height[m.layer_id] = std::max(layer_height[m.layer_id], static_cast<double>(m.position.z())); // top z of the layer
             max_layer = std::max(max_layer, m.layer_id);
             any_layer = true;
             break;
@@ -497,14 +497,17 @@ MoveAgg aggregate(const GCodeProcessorResult& r, int mode)
         last = m.position;
     }
     agg.layers = any_layer ? static_cast<unsigned>(layer_height.size()) : 0;
-    bool first = true;
-    for (const auto& [id, hgt] : layer_height) {
+    // Layer heights from the steps between the layers' top z (extrusion heights vary within a layer:
+    // bridges are thicker).
+    bool   first = true;
+    double prev_z = 0.;
+    for (const auto& [id, z] : layer_height) {
         if (first) {
-            agg.first_layer_height = hgt;
+            agg.first_layer_height = std::round(z * 1000.) / 1000.;
             first = false;
-            continue;
-        }
-        agg.heights[std::round(hgt * 1000.) / 1000.]++;
+        } else if (z - prev_z > 1e-4)
+            agg.heights[std::round((z - prev_z) * 1000.) / 1000.]++;
+        prev_z = z;
     }
     (void) max_layer;
     return agg;
