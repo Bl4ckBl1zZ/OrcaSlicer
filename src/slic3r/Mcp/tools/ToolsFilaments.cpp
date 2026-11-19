@@ -49,40 +49,8 @@ std::vector<std::string> strings_of(const char* key)
     return {};
 }
 
-// Where slot `slot` (1-based) is used: objects, parts/modifiers, height ranges and colour paint.
-json used_by(int slot)
-{
-    json objects = json::array(), parts = json::array(), ranges = json::array(), paint = json::array();
-    for (const ModelObject* object : plater().model().objects) {
-        const int object_filament = object->config.has("extruder") ? object->config.extruder() : 1;
-        if (object_filament == slot)
-            objects.push_back(Ids::of(*object));
-        for (const ModelVolume* volume : object->volumes) {
-            if (volume->config.has("extruder") && volume->config.extruder() == slot)
-                parts.push_back(Ids::of(*volume));
-            const std::vector<size_t> painted = volume->get_extruders_from_multi_material_painting();
-            if (std::find(painted.begin(), painted.end(), static_cast<size_t>(slot - 1)) != painted.end())
-                paint.push_back(Ids::of(*volume));
-        }
-        for (const auto& [range, config] : object->layer_config_ranges)
-            if (config.has("extruder") && config.get().opt_int("extruder") == slot)
-                ranges.push_back({{"object", Ids::of(*object)}, {"z_min", Scene::round4(range.first)}, {"z_max", Scene::round4(range.second)}});
-    }
-    json out = json::object();
-    out["objects"] = std::move(objects);
-    out["parts"] = std::move(parts);
-    out["layer_ranges"] = std::move(ranges);
-    out["paint"] = std::move(paint);
-    return out;
-}
-
-bool is_used(const json& usage)
-{
-    for (const char* key : {"objects", "parts", "layer_ranges", "paint"})
-        if (!usage[key].empty())
-            return true;
-    return false;
-}
+json used_by(int slot) { return Scene::filament_used_by(slot); }
+bool is_used(const json& usage) { return Scene::filament_in_use(usage); }
 
 json slot_json(size_t index)
 {
@@ -163,7 +131,7 @@ json filament_edit(ToolContext& ctx)
     };
 
     if (action == "add") {
-        unexpected({"slot", "replace_with"});
+        unexpected({"filament", "replace_with"});
         std::string preset_name;
         if (ctx.has("preset")) {
             // Resolve against slot 1's selector: same printer, same compatibility filter.
@@ -191,7 +159,7 @@ json filament_edit(ToolContext& ctx)
         out["added"] = slot_json(insert_at);
     } else if (action == "remove") {
         unexpected({"color", "preset"});
-        const int index = slot_index(ctx, "slot");
+        const int index = slot_index(ctx, "filament");
         refuse_mixed(static_cast<size_t>(index));
         if (b.num_physical_filaments() <= 1)
             fail("last_filament", "The project needs at least one filament.");
@@ -226,7 +194,7 @@ json filament_edit(ToolContext& ctx)
         ctx.set_slice_invalidated();
     } else if (action == "set_color") {
         unexpected({"replace_with", "preset"});
-        const int index = slot_index(ctx, "slot");
+        const int index = slot_index(ctx, "filament");
         refuse_mixed(static_cast<size_t>(index));
         if (!ctx.has("color"))
             fail("invalid_argument", "action \"set_color\" needs `color` (#RRGGBB).");
@@ -258,7 +226,7 @@ json filament_edit(ToolContext& ctx)
         });
         out["changed"] = slot_json(static_cast<size_t>(index));
     } else if (action == "auto_flush") {
-        unexpected({"slot", "replace_with", "color", "preset"});
+        unexpected({"filament", "replace_with", "color", "preset"});
         const json before = b.project_config.has("flush_volumes_matrix")
                                 ? config_value_json(*b.project_config.option("flush_volumes_matrix"))
                                 : json(nullptr);
@@ -295,9 +263,9 @@ MCP_TOOL_GROUP(Filaments)
         tool.title = "Add, remove or recolour filament slots";
         tool.description =
             "Change the project's filament slots, as the sidebar's filament list does. action add {color?: \"#RRGGBB\" (default: the next "
-            "colour the app picks), preset?: filament preset for the new slot}: limit at 64 slots. action remove {slot, replace_with?}: a slot "
+            "colour the app picks), preset?: filament preset for the new slot}: limit at 64 slots. action remove {filament, replace_with?}: a slot "
             "in use by objects, parts, height ranges or colour paint needs replace_with (the slot that takes them over), else in_use; the last "
-            "filament cannot be removed (last_filament); slots above move down by one (see notes). action set_color {slot, color}: the slot's "
+            "filament cannot be removed (last_filament); slots above move down by one (see notes). action set_color {filament, color}: the slot's "
             "colour, as the colour picker sets it (objects using it are redrawn). action auto_flush: recompute the flushing volumes matrix. "
             "Mixed-colour slots are read-only. The preset of a slot is chosen with preset_select type filament; objects and parts are assigned "
             "to a slot with object_update / modifier_update `filament`. Outside the undo stack: recorded in the journal (history revert: add, "
@@ -306,7 +274,7 @@ MCP_TOOL_GROUP(Filaments)
             "type": "object",
             "properties": {
                 "action": {"enum": ["add", "remove", "set_color", "auto_flush"]},
-                "slot": {"type": "integer", "minimum": 1, "description": "1-based slot (remove, set_color)."},
+                "filament": {"type": "integer", "minimum": 1, "description": "1-based filament slot (remove, set_color)."},
                 "color": {"$ref": "#/$defs/Color"},
                 "preset": {"type": "string", "minLength": 1, "description": "Filament preset of the new slot (add)."},
                 "replace_with": {"type": "integer", "minimum": 1, "description": "Slot that takes over what used the removed slot (remove)."}

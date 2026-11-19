@@ -1,5 +1,5 @@
-// Slice tools: plate_validate, slice, slice_status, slice_cancel, slice_result, slice_export, and
-// the test-only debug_slice_fixture.
+// Slice tools: plate_validate, slice, slice_status, slice_cancel, slice_result, and
+// the test-only debug_viewer_state.
 //
 // Slicing goes through the Slice button's own path: the tool posts EVT_GLTOOLBAR_SLICE_PLATE /
 // EVT_GLTOOLBAR_SLICE_ALL to the Plater (on_action_slice_plate/all -> Plater::reslice), so a watching
@@ -282,7 +282,26 @@ json slice_result(ToolContext& ctx)
     return out;
 }
 
-json slice_export(ToolContext& ctx)
+// --------------------------------------------------------------------------------------------
+// Test-only (debug tools): the window's own G-code preview state, to show that offscreen preview
+// pictures leave it alone. No real tool reports the user's view.
+json debug_viewer_state(ToolContext&)
+{
+    json        out = json::object({{"ok", true}});
+    GLCanvas3D* canvas = plater().get_preview_canvas3D();
+    const auto& range = canvas->get_gcode_viewer().get_layers_z_range();
+    out["layers_view_range"] = json::array({range[0], range[1]});
+    out["preview_tab"] = plater().is_preview_shown();
+    out["current_plate"] = current_plate() + 1;
+    return out;
+}
+
+} // namespace
+
+namespace Slice {
+
+// G-code export behind export_file kinds "gcode" / "gcode_3mf" (declared in slice/SliceData.hpp).
+json export_gcode(ToolContext& ctx)
 {
     install_summarizer();
     const std::string kind = ctx.arg("kind", "gcode");
@@ -333,6 +352,8 @@ json slice_export(ToolContext& ctx)
     // .gcode.3mf: the application's own writer (Plater::export_gcode_3mf without its file dialog).
     const boost::filesystem::path path = Files::check_write(path_arg, {".gcode.3mf"}, overwrite);
     SaveStrategy strategy = SaveStrategy::Silence | SaveStrategy::SplitModel | SaveStrategy::WithGcode | SaveStrategy::SkipModel;
+    if (wxGetApp().app_config->get_bool("export_statistics"))
+        strategy = strategy | SaveStrategy::WithStatistics;
     const int    rc = plater().export_3mf(path, strategy, target < 0 ? PLATE_ALL_IDX : target);
     if (rc < 0 || !boost::filesystem::exists(path))
         fail("export_failed", "Writing \"" + path.string() + "\" failed (code " + std::to_string(rc) + ").", "Check the folder, or slice again.");
@@ -348,82 +369,7 @@ json slice_export(ToolContext& ctx)
     return out;
 }
 
-// --------------------------------------------------------------------------------------------
-// Test fixture helper (debug tools only): scene set-ups the slice tests need before the edit and
-// settings groups are merged.
-json debug_slice_fixture(ToolContext& ctx)
-{
-    const std::string action = ctx.arg("action", "");
-    json out = json::object({{"ok", true}, {"action", action}});
-    if (action == "add_plate") {
-        ctx.snapshot("debug add plate");
-        out["plate"] = plater().add_plate() + 1;
-    } else if (action == "delete_plate") {
-        const int idx = Ids::plate(ctx.args()["plate"]);
-        ctx.snapshot("debug delete plate");
-        out["result"] = plater().delete_plate(idx);
-    } else if (action == "move") {
-        ObjectRef ref = Ids::object(ctx.arg("object", ""), "object");
-        const int idx = Ids::plate(ctx.has("plate") ? ctx.args()["plate"] : json(nullptr));
-        std::vector<double> offset = ctx.arg<std::vector<double>>("offset", {});
-        PartPlate* plate = plater().get_partplate_list().get_plate(idx);
-        ctx.snapshot("debug move");
-        const BoundingBoxf3 box = plate->get_bounding_box(false);
-        Vec3d target = Vec3d(box.center().x(), box.center().y(), 0.);
-        if (offset.size() >= 2)
-            target += Vec3d(offset[0], offset[1], 0.);
-        for (ModelInstance* inst : ref.object->instances) {
-            const BoundingBoxf3 ib = ref.object->instance_bounding_box(*inst);
-            Vec3d d = target - Vec3d(ib.center().x(), ib.center().y(), 0.);
-            inst->set_offset(inst->get_offset() + d);
-        }
-        ref.object->invalidate_bounding_box();
-        plater().get_partplate_list().reload_all_objects();
-        Refresh::full();
-        ctx.set_slice_invalidated();
-    } else if (action == "set") {
-        const std::string type = ctx.arg("preset", "print");
-        DynamicPrintConfig cfg;
-        ConfigSubstitutionContext sub(ForwardCompatibilitySubstitutionRule::Disable);
-        const json& values = ctx.args()["values"];
-        for (auto it = values.begin(); it != values.end(); ++it)
-            cfg.set_deserialize(it.key(), it.value().is_string() ? it.value().get<std::string>() : it.value().dump(), sub);
-        Tab* tab = wxGetApp().get_tab(type == "printer" ? Preset::TYPE_PRINTER : type == "filament" ? Preset::TYPE_FILAMENT : Preset::TYPE_PRINT);
-        if (tab == nullptr)
-            fail("internal", "no tab for preset type " + type);
-        tab->load_config(cfg);
-        ctx.set_slice_invalidated();
-    } else if (action == "load") {
-        const boost::filesystem::path path = Files::check_read(ctx.arg("path", ""), Files::model_extensions());
-        ctx.snapshot("debug load");
-        std::vector<size_t> idx = plater().load_files({path}, LoadStrategy::LoadModel);
-        json ids = json::array();
-        for (size_t i : idx)
-            if (i < plater().model().objects.size())
-                ids.push_back(Ids::of(*plater().model().objects[i]));
-        out["objects"] = ids;
-    } else if (action == "delete_object") {
-        ObjectRef ref = Ids::object(ctx.arg("object", ""), "object");
-        ctx.snapshot("debug delete");
-        plater().delete_object_from_model(static_cast<size_t>(ref.obj_idx));
-        Refresh::full();
-    } else if (action == "add_filament") {
-        // The sidebar's "+" button.
-        plater().sidebar().add_filament();
-        out["filaments"] = Ids::filament_count();
-    } else if (action == "viewer_state") {
-        // The window's own G-code preview, to show that offscreen pictures leave it alone.
-        GLCanvas3D* canvas = plater().get_preview_canvas3D();
-        const auto& range = canvas->get_gcode_viewer().get_layers_z_range();
-        out["layers_view_range"] = json::array({range[0], range[1]});
-        out["preview_tab"] = plater().is_preview_shown();
-        out["current_plate"] = current_plate() + 1;
-    } else
-        fail("invalid_argument", "unknown action " + action);
-    return out;
-}
-
-} // namespace
+} // namespace Slice
 
 MCP_TOOL_GROUP(Slice)
 {
@@ -459,7 +405,7 @@ MCP_TOOL_GROUP(Slice)
             "A plate that already has a valid result is not re-sliced (`reused`). Fails before starting with validation_failed (the errors, "
             "each with a fix), nothing_to_slice or busy_slicing. A change to the scene or settings while slicing stops the slice (status "
             "cancelled, cancel_reason scene_changed_or_user): slice again. Results: slice_result, slice_layers, analyze; pictures: screenshot "
-            "view=preview; file: slice_export.";
+            "view=preview; file: export_file kind gcode or gcode_3mf.";
         tool.input_schema = Schema::parse(R"JSON({
             "type": "object",
             "properties": {
@@ -530,50 +476,12 @@ MCP_TOOL_GROUP(Slice)
     }
     {
         ToolDef tool;
-        tool.name = "slice_export";
-        tool.title = "Export sliced G-code";
-        tool.description =
-            "Write the sliced result of a plate to a file: kind \"gcode\" (one plate, .gcode, the G-code as sliced; post-processing scripts are "
-            "not run) or \"gcode_3mf\" (a sliced project .gcode.3mf with one plate or `plate: \"all\"`). The path must be inside a folder "
-            "app_status lists in write_roots; `overwrite` replaces an existing file. Returns {path, bytes, header (the statistics comments of "
-            "the G-code: time, filament, layers), summary}. Fails with not_sliced, busy_slicing, path_denied, exists, export_failed. Nothing is "
-            "ever sent to a printer.";
-        tool.input_schema = Schema::parse(R"JSON({
-            "type": "object",
-            "properties": {
-                "kind": {"enum": ["gcode", "gcode_3mf"], "default": "gcode"},
-                "path": {"type": "string", "minLength": 1},
-                "plate": {"oneOf": [{"$ref": "#/$defs/PlateRef"}, {"const": "all"}], "description": "Default: current. \"all\" only for gcode_3mf."},
-                "overwrite": {"type": "boolean", "default": false}
-            },
-            "required": ["path"],
-            "additionalProperties": false})JSON", "slice_export");
-        tool.idempotent = true;
-        tool.accepts_if_rev = false;
-        tool.handler = slice_export;
-        registry.add(std::move(tool));
-    }
-    {
-        ToolDef tool;
-        tool.name = "debug_slice_fixture";
-        tool.title = "Slice test fixtures";
-        tool.description = "Test only. Scene set-ups for the slice tests: add_plate, delete_plate, move (object to plate, offset from its "
-                           "centre), set (preset values), load (a model file), delete_object.";
-        tool.input_schema = Schema::parse(R"JSON({
-            "type": "object",
-            "properties": {
-                "action": {"enum": ["add_plate", "delete_plate", "move", "set", "load", "delete_object", "add_filament", "viewer_state"]},
-                "object": {"$ref": "#/$defs/Id"},
-                "plate": {"$ref": "#/$defs/PlateRef"},
-                "offset": {"type": "array", "items": {"type": "number"}},
-                "preset": {"enum": ["print", "printer", "filament"]},
-                "values": {"type": "object"},
-                "path": {"type": "string"}
-            },
-            "required": ["action"],
-            "additionalProperties": false})JSON", "debug_slice_fixture");
+        tool.name = "debug_viewer_state";
+        tool.title = "Preview state of the window";
+        tool.description = "Test only. The layer range and tab of the window's own G-code preview, and the current plate.";
+        tool.read_only = true;
         tool.debug_only = true;
-        tool.handler = debug_slice_fixture;
+        tool.handler = debug_viewer_state;
         registry.add(std::move(tool));
     }
 }

@@ -38,7 +38,7 @@ def test_add_colour_assign_remove(fc):
     assert scene["filaments"][-1]["color"] == "#FF0000"
     slot = count + 1
 
-    recoloured = fc.tool("filament_edit", action="set_color", slot=slot, color="#00ff00")
+    recoloured = fc.tool("filament_edit", action="set_color", filament=slot, color="#00ff00")
     assert recoloured["changed"]["color"] == "#00FF00"
     revert_journal(fc, recoloured["journal"])
     assert slots(fc)[-1]["color"] == "#FF0000"
@@ -47,9 +47,9 @@ def test_add_colour_assign_remove(fc):
     obj = cube(fc)
     fc.tool("object_update", targets=[obj["id"]], filament=slot)
     assert obj["id"] in slots(fc)[-1]["used_by"]["objects"]
-    in_use = fc.tool_error("filament_edit", action="remove", slot=slot)
+    in_use = fc.tool_error("filament_edit", action="remove", filament=slot)
     assert in_use.code == "in_use" and obj["id"] in in_use.details["used_by"]["objects"]
-    removed = fc.tool("filament_edit", action="remove", slot=slot, replace_with=1)
+    removed = fc.tool("filament_edit", action="remove", filament=slot, replace_with=1)
     assert removed["removed"]["slot"] == slot and len(removed["filaments"]) == count
     assert cube(fc)["filament"] == 1
     # The removal is not revertible; the assignment undo is still on the undo stack.
@@ -75,17 +75,17 @@ def test_part_assignment_and_paint_free_removal(fc):
     assert body["volume"]["filament"] == slot
     assert vid in slots(fc)[slot - 1]["used_by"]["parts"]
     undo(fc)
-    fc.tool("filament_edit", action="remove", slot=slot)
+    fc.tool("filament_edit", action="remove", filament=slot)
     assert len(slots(fc)) == slot - 1
 
 
 def test_errors(fc):
-    assert fc.tool_error("filament_edit", action="remove", slot=1).code in ("last_filament", "in_use")
-    assert fc.tool_error("filament_edit", action="set_color", slot=1).code == "invalid_argument"
-    assert fc.tool_error("filament_edit", action="set_color", slot=1, color="red").code == "invalid_argument"
-    assert fc.tool_error("filament_edit", action="set_color", slot=7, color="#123456").code == "invalid_argument"
+    assert fc.tool_error("filament_edit", action="remove", filament=1).code in ("last_filament", "in_use")
+    assert fc.tool_error("filament_edit", action="set_color", filament=1).code == "invalid_argument"
+    assert fc.tool_error("filament_edit", action="set_color", filament=1, color="red").code == "invalid_argument"
+    assert fc.tool_error("filament_edit", action="set_color", filament=7, color="#123456").code == "invalid_argument"
     assert fc.tool_error("filament_edit", action="add", preset="no such filament").code == "unknown_preset"
-    assert fc.tool_error("filament_edit", action="add", slot=2).code == "invalid_argument"
+    assert fc.tool_error("filament_edit", action="add", filament=2).code == "invalid_argument"
 
 
 def test_auto_flush(fc):
@@ -95,7 +95,7 @@ def test_auto_flush(fc):
         assert flushed["flush_volumes_matrix"] and flushed["journal"]
         revert_journal(fc, flushed["journal"])
     finally:
-        fc.tool("filament_edit", action="remove", slot=added["added"]["slot"])
+        fc.tool("filament_edit", action="remove", filament=added["added"]["slot"])
 
 
 def test_colour_reaches_the_renderer(fc):
@@ -105,8 +105,8 @@ def test_colour_reaches_the_renderer(fc):
         ui = fc.tool("debug_settings_ui")
         assert ui["render_colors"][slot - 1].upper() == "#123456"
         assert len(ui["sidebar_filaments"]) == slot
-        fc.tool("filament_edit", action="set_color", slot=slot, color="#654321")
+        fc.tool("filament_edit", action="set_color", filament=slot, color="#654321")
         assert fc.tool("debug_settings_ui")["render_colors"][slot - 1].upper() == "#654321"
     finally:
-        fc.tool("filament_edit", action="remove", slot=slot)
+        fc.tool("filament_edit", action="remove", filament=slot)
     assert len(fc.tool("debug_settings_ui")["sidebar_filaments"]) == slot - 1

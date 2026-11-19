@@ -10,8 +10,12 @@
 //   workspace    <data_dir>/mcp/workspace, always allowed for both.
 //   ORCA_MCP_ROOTS (environment, ';'-separated) adds folders to both lists; for test launches.
 //
-// Paths are made absolute and canonical (symbolic links, junctions and ".." resolved) before the
-// folder test, so a link inside an allowed folder cannot lead out of it.
+// A path must be absolute. Before anything touches the disk its text is checked (no UNC or device
+// paths such as \\server\share or \\?\C:\..., no reserved device names like CON or NUL.3mf, no ':'
+// after the drive letter, no names ending in a dot or space) and its lexically normalised form must be
+// inside an allowed folder. Then it is resolved (symbolic links, junctions) and tested again, so a
+// link inside an allowed folder cannot lead out of it; a file to write must not itself be a link.
+// All refusals are path_denied (details.reason names the text check that failed, if one did).
 
 #include <string>
 #include <vector>

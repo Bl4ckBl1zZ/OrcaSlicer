@@ -36,13 +36,6 @@ namespace Slic3r { namespace GUI { namespace Mcp { namespace Slice {
 
 namespace {
 
-// Camera presets of the screenshot tool (McpRenderer.cpp), azimuth in its convention (90 = from the right).
-struct Preset { const char* name; double az, el; };
-const Preset PRESETS[] = {
-    { "iso", 45., 35. },    { "iso_left", 315., 35. }, { "iso_back", 135., 35. }, { "iso_back_left", 225., 35. }, { "top", 0., 90. },
-    { "bottom", 0., -90. }, { "front", 0., 0. },       { "back", 180., 0. },      { "left", 270., 0. },           { "right", 90., 0. },
-};
-
 const std::map<std::string, std::string>& view_types()
 {
     static const std::map<std::string, std::string> m = {
@@ -221,21 +214,8 @@ Picture render_preview(ToolContext& ctx, const ViewRequest& req)
     pr.show_bed = opt.value("show_bed", true);
     pr.show_shells = opt.value("show_shells", false);
 
-    // Camera: the screenshot tool's conventions, computed with its CameraView.
+    // Camera: the screenshot tool's own (Renderer::camera_for), framing the toolpaths.
     const CameraRequest& cr = req.camera;
-    CameraView           cam;
-    cam.width = req.width;
-    cam.height = req.height;
-    cam.perspective = !cr.orthographic;
-    for (const Preset& p : PRESETS)
-        if (cr.preset == p.name) {
-            cam.azimuth_deg = p.az;
-            cam.elevation_deg = p.el;
-        }
-    if (cr.has_azimuth)
-        cam.azimuth_deg = cr.azimuth_deg;
-    if (cr.has_elevation)
-        cam.elevation_deg = cr.elevation_deg;
     const Vec3d         origin = h.plate->get_origin();
     const BoundingBoxf3 plate_box = plate_footprint(plate_idx);
     BoundingBoxf3       content = toolpath_box(result, layer_min, layer_max, z_min, z_max);
@@ -252,22 +232,7 @@ Picture render_preview(ToolContext& ctx, const ViewRequest& req)
                 for (size_t i = 0; i < ref.object->instances.size(); ++i)
                     merge(ids_box, ref.object->instance_bounding_box(i));
         }
-    BoundingBoxf3 frame = plate_box;
-    merge(frame, content);
-    if (cr.target == "objects" && content.defined)
-        frame = content;
-    else if (cr.target == "ids" && ids_box.defined)
-        frame = ids_box;
-    cam.target = frame.center();
-    cam.fit(box_corners(frame.min, frame.max), cr.zoom);
-    if (cr.has_target_point)
-        cam.target = origin + cr.target_point;
-    if (cr.has_distance && cam.perspective)
-        cam.distance = cr.distance;
-    BoundingBoxf3 depth = plate_box;
-    merge(depth, content);
-    depth.min.z() = std::min(depth.min.z(), -1.);
-    cam.set_depth_range(box_corners(depth.min, depth.max));
+    CameraView cam = Renderer::camera_for(cr, req.width, req.height, origin, plate_box, content, ids_box);
     cam.update();
 
     // Hand the renderer the same eye: orbit angles (its azimuth turns the other way), target,

@@ -17,7 +17,9 @@ class ObjectBase;
 struct GCodeProcessorResult;
 namespace GUI {
 class PartPlate;
-namespace Mcp { namespace Slice {
+namespace Mcp {
+class ToolContext;
+namespace Slice {
 
 struct PlateHandles
 {
@@ -62,6 +64,10 @@ json gcode_file_info(const std::string& path);
 
 std::string format_duration(double seconds);
 double      round_to(double v, int digits);
+
+// export_file kinds "gcode" / "gcode_3mf": copies the plate's sliced G-code (post-processing scripts are not
+// run) or writes a .gcode.3mf. Reads kind, path, plate (or "all"), overwrite from ctx. Defined in ToolsSlice.cpp.
+json export_gcode(ToolContext& ctx);
 
 }}}} // namespace Slic3r::GUI::Mcp::Slice
 

@@ -23,7 +23,7 @@ def pc(request, presets_app):
 def offered(client, kind, slot=None):
     args = dict(type=kind, name="no such preset at all")
     if slot:
-        args["slot"] = slot
+        args["filament"] = slot
     failure = client.tool_error("preset_select", **args)
     assert failure.code == "unknown_preset"
     return failure.details["offered"]
@@ -55,7 +55,7 @@ def test_unknown_and_incompatible(pc):
     failure = pc.tool_error("preset_select", type="process", name="definitely not a preset")
     assert failure.code == "unknown_preset" and failure.details["offered"]
     assert pc.tool_error("preset_select", type="filament", name="x").code == "invalid_argument"  # no slot
-    assert pc.tool_error("preset_select", type="process", name="x", slot=1).code == "invalid_argument"
+    assert pc.tool_error("preset_select", type="process", name="x", filament=1).code == "invalid_argument"
     assert pc.tool_error("preset_select", type="process", name="x", save_as="y").code == "invalid_argument"
 
 
@@ -159,7 +159,7 @@ def test_filament_slot_select(pc):
     other = next((n for n in names if n != current), None)
     if other is None:
         pytest.skip("only one filament preset offered")
-    result = pc.tool("preset_select", type="filament", slot=1, name=other)
-    assert result["slot"] == 1 and result["filaments"][0]["preset"] != current
+    result = pc.tool("preset_select", type="filament", filament=1, name=other)
+    assert result["filament"] == 1 and result["filaments"][0]["preset"] != current
     revert_journal(pc, result["journal"])
     assert pc.tool("app_status")["filaments"][0]["preset"] == current

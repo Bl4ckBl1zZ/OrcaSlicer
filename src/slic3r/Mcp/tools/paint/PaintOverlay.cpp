@@ -217,7 +217,10 @@ void register_overlays()
     }
     OverlayPlugin overhang;
     overhang.name = "overhang";
-    overhang.description = "faces within editor.overhang_threshold_deg (default 45) of facing straight down, in orange, to choose a threshold";
+    overhang.description = "faces within editor.overhang_threshold_deg (default 45) of facing straight down, in orange, including faces "
+                           "on the bed (as the support painting gizmo)";
+    overhang.options_schema = json::object({{"overhang_threshold_deg",
+        json::object({{"type", "number"}, {"minimum", 0}, {"maximum", 90}, {"default", 45}, {"description", "Used by overlay \"overhang\"."}})}});
     overhang.draw = [](const Renderer::RenderTarget& target, const json& options) { draw_overhang(target, options); };
     RenderPlugins::add_overlay(std::move(overhang));
 }

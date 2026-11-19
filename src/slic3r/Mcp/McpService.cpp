@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <exception>
-#include <random>
+#include <stdexcept>
 #include <utility>
 
 #include <boost/filesystem.hpp>
@@ -87,13 +87,17 @@ std::string read_file(const fs::path& path)
     return content;
 }
 
+// Shortest token accepted from ORCA_MCP_TOKEN or the token file (a generated one has 43 characters).
+const size_t MIN_TOKEN_LENGTH = 32;
+
+// 32 random bytes from OpenSSL's CSPRNG in URL-safe base64, or "" when that fails: there is no
+// fallback to a weaker generator; the server then does not start.
 std::string new_token()
 {
     unsigned char bytes[32];
     if (RAND_bytes(bytes, static_cast<int>(sizeof(bytes))) != 1) {
-        std::random_device device;
-        for (unsigned char& b : bytes)
-            b = static_cast<unsigned char>(device());
+        BOOST_LOG_TRIVIAL(error) << "MCP: RAND_bytes failed; cannot generate an access token";
+        return {};
     }
     return base64_encode(std::string(reinterpret_cast<const char*>(bytes), sizeof(bytes)), true);
 }
@@ -141,6 +145,11 @@ void Service::on_app_ready()
                 m_env_port = value;
         }
         m_env_token = env("ORCA_MCP_TOKEN");
+        if (!m_env_token.empty() && m_env_token.size() < MIN_TOKEN_LENGTH) {
+            BOOST_LOG_TRIVIAL(warning) << "MCP: ORCA_MCP_TOKEN is shorter than " << MIN_TOKEN_LENGTH
+                                       << " characters and is ignored; using the stored (or a new) token";
+            m_env_token.clear();
+        }
         m_env_endpoint_file = env("ORCA_MCP_ENDPOINT_FILE");
         const std::string debug = env("ORCA_MCP_DEBUG_TOOLS");
         m_debug_tools = debug == "1" || debug == "true";
@@ -189,8 +198,10 @@ std::string Service::token()
     if (!m_env_token.empty())
         return m_env_token;
     std::string stored = read_file(token_file());
-    if (stored.size() < 16) {
+    if (stored.size() < MIN_TOKEN_LENGTH) {
         stored = new_token();
+        if (stored.empty())
+            return {}; // start() refuses to run without a token
         if (!write_private_file(token_file(), stored + "\n"))
             BOOST_LOG_TRIVIAL(error) << "MCP: cannot store the access token in " << token_file().string();
     }
@@ -199,7 +210,13 @@ std::string Service::token()
 
 void Service::regenerate_token()
 {
-    if (!write_private_file(token_file(), new_token() + "\n"))
+    const std::string fresh = new_token();
+    if (fresh.empty()) {
+        // Keep the old token rather than store a weak one.
+        BOOST_LOG_TRIVIAL(error) << "MCP: the access token was not replaced: no secure random source";
+        return;
+    }
+    if (!write_private_file(token_file(), fresh +"\n"))
         BOOST_LOG_TRIVIAL(error) << "MCP: cannot store the access token in " << token_file().string();
     if (m_server != nullptr) {
         stop();
@@ -228,6 +245,8 @@ bool Service::start()
         HttpServerConfig config;
         config.port = static_cast<uint16_t>(m_running_port_setting);
         config.token = token();
+        if (config.token.empty())
+            throw std::runtime_error("cannot generate a secure access token (the system's random number generator failed)");
 
         HttpServer::Hooks hooks;
         Dispatcher*       dispatcher = m_dispatcher.get();

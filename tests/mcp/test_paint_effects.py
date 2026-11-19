@@ -1,9 +1,8 @@
 ﻿"""Paint group: the paint takes effect when slicing, the two end-to-end scenarios, and
 plate_layer_events.
 
-Effects are checked on real G-code: the test-only tool debug_paint_slice slices a copy of the app's
-plate with the app's own configuration through libslic3r (the slice tools of another group are not
-on this branch) and the G-code is parsed here: support extrusions, tool changes per layer, the seam
+Effects are checked on real G-code: the plate is sliced with the slice tool (process overrides set
+with settings_set for that slice and restored afterwards), exported with export_file and parsed here: support extrusions, tool changes per layer, the seam
 (start of each outer wall) and fuzzy-skin jitter.
 """
 
@@ -181,11 +180,31 @@ def part_box(c, oid):
     return p["box"]["min"], p["box"]["max"]
 
 
+def workspace(app) -> Path:
+    """The instance's own write root (<data dir>/mcp/workspace)."""
+    path = app.data_dir / "mcp" / "workspace"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def slice_and_export(c, path: Path):
+    """Slice the current plate with the real tools and write its G-code to `path`."""
+    r = c.tool("slice", wait_s=280)
+    assert r["status"] == "finished", r
+    c.tool("export_file", kind="gcode", path=str(path), overwrite=True)
+
+
 def slice_to(c, app, name, **overrides):
-    path = app.data_dir / f"{name}.gcode"
+    """Slice with process `overrides` set for this slice only (settings_set, restored afterwards), parse the G-code."""
+    path = workspace(app) / f"{name}.gcode"
     # The fixture plate leaves no room for a prime tower next to the model; it is not what is tested.
     overrides.setdefault("enable_prime_tower", 0)
-    c.tool("debug_paint_slice", path=str(path), overrides={k: str(v) for k, v in overrides.items()})
+    before = c.tool("settings_get", scope="process", keys=list(overrides))["values"]
+    c.tool("settings_set", scope="process", values=overrides)
+    try:
+        slice_and_export(c, path)
+    finally:
+        c.tool("settings_set", scope="process", values=before)
     return parse_gcode(path)
 
 
@@ -197,8 +216,8 @@ def t_app(launch_app, models):
 @pytest.fixture(scope="module")
 def logo_app(launch_app, models):
     app, clients = start(launch_app, "paint_logo", models["logo"])
-    clients["modern"].tool("debug_paint_fixture", op="add_filament", count=1)
-    clients["modern"].tool("debug_paint_fixture", op="filament_color", count=2, color="#FFFFFF")
+    clients["modern"].tool("filament_edit", action="add")
+    clients["modern"].tool("filament_edit", action="set_color", filament=2, color="#FFFFFF")
     return app, clients
 
 
@@ -216,7 +235,7 @@ def test_scenario_supports_only_where_needed(t_app, era):
     app, clients = t_app
     c = clients[era]
     oid = only_object(c)["id"]
-    c.tool("paint_apply", targets=[oid], channel="support", op="clear")
+    c.tool("paint_apply", targets=[oid], channel="support", action="clear")
     lo, hi = part_box(c, oid)
     cx, cy, z0 = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]
 
@@ -266,11 +285,11 @@ def test_scenario_supports_only_where_needed(t_app, era):
     assert xs and min(xs) > cx - 5 and max(xs) > cx + 15, (min(xs), max(xs))
 
     # The same without the blocker supports both arms (control).
-    c.tool("paint_apply", targets=[oid], channel="support", op="erase", selector={"box": {"min": [cx - 21, cy - 6, z0 + 19], "max": [cx - 5.5, cy + 6, z0 + 26]}})
+    c.tool("paint_apply", targets=[oid], channel="support", action="erase", selector={"box": {"min": [cx - 21, cy - 6, z0 + 19], "max": [cx - 5.5, cy + 6, z0 + 26]}})
     auto = [m for m in slice_to(c, app, f"t_auto_noblock_{era}", enable_support=1, support_type="normal(auto)") if is_support(m["role"])]
     xs = [p for m in auto for p in (m["x0"], m["x1"])]
     assert min(xs) < cx - 15 and max(xs) > cx + 15
-    c.tool("paint_apply", targets=[oid], channel="support", op="clear")
+    c.tool("paint_apply", targets=[oid], channel="support", action="clear")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -290,7 +309,7 @@ def test_scenario_logo_in_white(logo_app, era):
     app, clients = logo_app
     c = clients[era]
     oid = only_object(c)["id"]
-    c.tool("paint_apply", targets=[oid], channel="color", op="clear")
+    c.tool("paint_apply", targets=[oid], channel="color", action="clear")
     lo, hi = part_box(c, oid)
     cx, cy, z0 = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]
 
@@ -348,7 +367,7 @@ def test_color_band_changes_filament_in_exactly_its_layers(logo_app, era):
     app, clients = logo_app
     c = clients[era]
     oid = only_object(c)["id"]
-    c.tool("paint_apply", targets=[oid], channel="color", op="clear")
+    c.tool("paint_apply", targets=[oid], channel="color", action="clear")
     lo, hi = part_box(c, oid)
     z0 = lo[2]
     c.tool("paint_apply", targets=[oid], channel="color", state={"filament": 2}, resolution_mm=0.1,
@@ -357,7 +376,7 @@ def test_color_band_changes_filament_in_exactly_its_layers(logo_app, era):
     zs = sorted({m["z"] for m in moves if m["tool"] == 1})
     # layers 0.2 mm: tops 3.2 .. 5.2 have slice planes (z - 0.1) inside 3.1..5.1
     assert zs and zs[0] == pytest.approx(z0 + 3.2, abs=1e-3) and zs[-1] == pytest.approx(z0 + 5.2, abs=1e-3), zs
-    c.tool("paint_apply", targets=[oid], channel="color", op="clear")
+    c.tool("paint_apply", targets=[oid], channel="color", action="clear")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -370,7 +389,7 @@ def test_seam_paint_moves_the_seam(cyl_app, era):
     c = clients[era]
     oid = only_object(c)["id"]
     for ch in ("seam", "fuzzy_skin"):
-        c.tool("paint_apply", targets=[oid], channel=ch, op="clear")
+        c.tool("paint_apply", targets=[oid], channel=ch, action="clear")
     lo, hi = part_box(c, oid)
     cx, cy = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2
     # A vertical strip on the +x side (pointing away from the default "aligned/back" choice).
@@ -381,7 +400,7 @@ def test_seam_paint_moves_the_seam(cyl_app, era):
     assert len(starts) > 20
     near = [z for z, (x, y) in starts.items() if x > cx + 8 and abs(y - cy) < 2.5]
     assert len(near) >= 0.9 * len(starts), (len(near), len(starts))
-    c.tool("paint_apply", targets=[oid], channel="seam", op="clear")
+    c.tool("paint_apply", targets=[oid], channel="seam", action="clear")
     starts = outer_wall_starts(slice_to(c, app, f"seam_none_{era}", seam_position="back"))
     near = [z for z, (x, y) in starts.items() if x > cx + 8 and abs(y - cy) < 2.5]
     assert len(near) < 0.1 * len(starts)
@@ -405,7 +424,7 @@ def test_fuzzy_skin_only_where_painted(cyl_app, era):
     app, clients = cyl_app
     c = clients[era]
     oid = only_object(c)["id"]
-    c.tool("paint_apply", targets=[oid], channel="fuzzy_skin", op="clear")
+    c.tool("paint_apply", targets=[oid], channel="fuzzy_skin", action="clear")
     lo, hi = part_box(c, oid)
     cx, cy, z0 = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]
     r = c.tool("paint_apply", targets=[oid], channel="fuzzy_skin", state="fuzzy", resolution_mm=0.1,
@@ -419,7 +438,7 @@ def test_fuzzy_skin_only_where_painted(cyl_app, era):
     outside = [j for z, j in jitter.items() if z <= z0 + 2.6 or z >= z0 + 6.6]
     assert inside and outside
     assert min(inside) > 0.05 and max(outside) < 0.02 and min(inside) > 3 * max(outside), (min(inside), max(outside))
-    c.tool("paint_apply", targets=[oid], channel="fuzzy_skin", op="clear")
+    c.tool("paint_apply", targets=[oid], channel="fuzzy_skin", action="clear")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -431,7 +450,7 @@ def test_layer_events(logo_app, era):
     app, clients = logo_app
     c = clients[era]
     oid = only_object(c)["id"]
-    c.tool("paint_apply", targets=[oid], channel="color", op="clear")
+    c.tool("paint_apply", targets=[oid], channel="color", action="clear")
     c.tool("plate_layer_events", action="clear")
     listed = c.tool("plate_layer_events")
     assert listed["events"] == [] and listed["layers"]["count"] > 10 and "ok" not in listed
@@ -454,11 +473,11 @@ def test_layer_events(logo_app, era):
     # The G-code switches to filament 2 at that layer and pauses at layer 30.
     moves = slice_to(c, app, f"events_{era}")
     zs2 = sorted({m["z"] for m in moves if m["tool"] == 1})
-    assert zs2 and zs2[0] == pytest.approx(ev["z"], abs=0.21), zs2[:3]
+    assert zs2 and zs2[0] == pytest.approx(ev["z"], abs=0.21), c.tool("plate_layer_events")
     assert not [m for m in moves if m["tool"] == 1 and m["z"] < ev["z"] - 0.21]
 
     # Saved in the 3MF.
-    rt = c.tool("debug_paint_3mf", path=str(app.data_dir / f"events_{era}.3mf"))
+    rt = c.tool("debug_paint_3mf", path=str(workspace(app) / f"events_{era}.3mf"))
     assert rt["layer_events"]["1"]["equal"] is True and rt["layer_events"]["1"]["events"] == 2
 
     # remove one, revert through the journal
@@ -486,8 +505,8 @@ def test_custom_gcode_allowed_by_preference(launch_app, run_dir, models):
         c = McpClient(app.url, app.token, era="modern").connect()
         r = c.tool("plate_layer_events", action="add", at={"layer": 10}, type="custom", gcode="M117 MCP-PAINT-MARKER")
         assert r["events"][0]["type"] == "custom" and r["events"][0]["gcode"] == "M117 MCP-PAINT-MARKER"
-        path = app.data_dir / "custom.gcode"
-        c.tool("debug_paint_slice", path=str(path))
+        path = workspace(app) / "custom.gcode"
+        slice_and_export(c, path)
         assert "M117 MCP-PAINT-MARKER" in path.read_text(encoding="utf-8", errors="replace")
     finally:
         app.stop()

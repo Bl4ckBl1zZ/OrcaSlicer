@@ -96,6 +96,13 @@ public:
     // set the depth range. The bed is drawn first when `show_bed`.
     static Picture render_custom(int plate_idx, int width, int height, const CameraRequest& camera, const BoundingBoxf3& scene_box, bool show_bed,
                                  const std::string& format, const std::function<void(const RenderTarget&)>& pass);
+
+    // The screenshot camera for a request: preset / angles, framing of `plate_box` + `content_box`
+    // (or of `content_box` for target "objects", `ids_box` for target ids, a point for target
+    // [x,y,z] in plate coordinates), zoom, distance and a depth range covering all three boxes.
+    // Every view that wants the screenshot tool's camera conventions uses this.
+    static CameraView camera_for(const CameraRequest& request, int width, int height, const Vec3d& plate_origin, const BoundingBoxf3& plate_box,
+                                 const BoundingBoxf3& content_box, const BoundingBoxf3& ids_box);
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -131,6 +138,9 @@ struct OverlayPlugin
 {
     std::string name;
     std::string description;
+    // Extra properties of the `editor` argument this overlay reads ({name: schema}), merged into the
+    // screenshot schema (e.g. "overhang_threshold_deg"). Names must not clash with other overlays'.
+    json        options_schema = json::object();
     std::function<void(const Renderer::RenderTarget&, const json& editor_options)> draw;
 };
 

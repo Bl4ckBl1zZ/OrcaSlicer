@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <set>
@@ -26,6 +27,21 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 
 inline double sq(double x) { return x * x; }
+
+// A number for a verdict message: at most `decimals` decimals, trailing zeros dropped (no float noise).
+std::string num(double x, int decimals = 1)
+{
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.*f", decimals, x);
+    std::string s = buf;
+    if (s.find('.') != std::string::npos) {
+        while (!s.empty() && s.back() == '0')
+            s.pop_back();
+        if (!s.empty() && s.back() == '.')
+            s.pop_back();
+    }
+    return s == "-0" ? "0" : s;
+}
 
 // Length of the part of segment (x0,y0)-(x1,y1) inside box (Liang-Barsky); returns the parameter
 // interval in t0/t1. An undefined box means "everything".
@@ -901,6 +917,12 @@ Limits limits_from_print(const Print &print) { return limits_from_config(print.f
 // Flow
 // ------------------------------------------------------------------------------------------------
 
+// Over-limit extrusion counts as a problem only when it is significant: at least this long in total
+// and this share of the filament's extrusion time. Shorter overshoot (a few short segments, e.g.
+// 0.08 s on a Benchy) is a warning.
+static constexpr double k_flow_problem_min_time_s = 1.0;
+static constexpr double k_flow_problem_min_share  = 0.002;
+
 FlowReport check_flow(const MoveAnalysis &analysis, const Limits &limits, double tolerance, size_t max_locations)
 {
     FlowReport rep;
@@ -976,9 +998,15 @@ FlowReport check_flow(const MoveAnalysis &analysis, const Limits &limits, double
             ff.worst.push_back(layers_max[i].second);
         if (ff.limit <= 0.)
             rep.verdict.raise("ok", "filament " + std::to_string(ff.filament + 1) + ": no max volumetric speed configured");
+        else if (ff.over_limit_length_mm > 0. && ff.over_limit_time_s >= k_flow_problem_min_time_s &&
+                 (a.time <= 0. || ff.over_limit_time_s / a.time >= k_flow_problem_min_share))
+            rep.verdict.raise("problem", "filament " + std::to_string(ff.filament + 1) + " exceeds its max volumetric speed for " +
+                                             num(ff.over_limit_time_s) + " s (" + num(ff.over_limit_length_mm) + " mm of extrusion, peak " +
+                                             num(ff.max_flow) + " > " + num(ff.limit) + " mm3/s)");
         else if (ff.over_limit_length_mm > 0.)
-            rep.verdict.raise("problem", "filament " + std::to_string(ff.filament + 1) + " exceeds its max volumetric speed (" +
-                                             std::to_string(ff.max_flow) + " > " + std::to_string(ff.limit) + " mm3/s)");
+            rep.verdict.raise("warning", "filament " + std::to_string(ff.filament + 1) + " briefly exceeds its max volumetric speed: " +
+                                             num(ff.over_limit_time_s, 2) + " s over " + num(ff.over_limit_length_mm) + " mm (peak " +
+                                             num(ff.max_flow) + " > " + num(ff.limit) + " mm3/s), negligible for the print");
         else if (ff.at_limit_length_mm > 0.)
             rep.verdict.raise("warning", "filament " + std::to_string(ff.filament + 1) + " is limited by its max volumetric speed on " +
                                              std::to_string(ff.layers_at_limit) + " layers (" + std::to_string(int(std::lround(ff.share_at_limit * 100.))) +
@@ -1063,7 +1091,7 @@ SpeedReport check_speeds(const MoveAnalysis &analysis, const Limits &limits, dou
         auto ia         = limits.role_acceleration.find(a.sr.role);
         a.sr.configured_acceleration = ia == limits.role_acceleration.end() ? limits.default_acceleration : ia->second;
         if (a.sr.over_configured_length_mm > 0.)
-            rep.verdict.raise("warning", a.sr.role + " printed faster than configured over " + std::to_string(a.sr.over_configured_length_mm) + " mm");
+            rep.verdict.raise("warning", a.sr.role + " printed faster than configured over " + num(a.sr.over_configured_length_mm) + " mm");
         rep.roles.push_back(a.sr);
     }
     if (limits.machine_max_acceleration_extruding > 0. && rep.max_acceleration > limits.machine_max_acceleration_extruding * (1. + tolerance))
@@ -1141,7 +1169,7 @@ CoolingReport check_cooling(const MoveAnalysis &analysis, const Limits &limits)
     if (rep.layers_below_slow_down_time > 0)
         rep.verdict.raise("warning", std::to_string(rep.layers_below_slow_down_time) +
                                          " layers print faster than the minimum layer time even after the slow-down (shortest " +
-                                         std::to_string(rep.min_layer_time_s) + " s at layer " + std::to_string(rep.min_layer_time_layer) + ")");
+                                         num(rep.min_layer_time_s) + " s at layer " + std::to_string(rep.min_layer_time_layer) + ")");
     else
         rep.verdict.message = "every layer takes at least the minimum layer time";
     return rep;
@@ -1309,7 +1337,7 @@ SupportReport check_supports(const MoveAnalysis &analysis, const Print *print, s
         }
     }
     if (rep.volume_mm3 > 0.)
-        rep.verdict.message = "support on " + std::to_string(rep.layers_with_support) + " layers, " + std::to_string(rep.volume_mm3) + " mm3";
+        rep.verdict.message = "support on " + std::to_string(rep.layers_with_support) + " layers, " + num(rep.volume_mm3) + " mm3";
     else
         rep.verdict.message = "no support printed";
     return rep;
@@ -1429,8 +1457,8 @@ OverhangReport check_overhangs(const MoveAnalysis &analysis, const Print *print,
             rep.wall_bands.push_back({band_names[b], band_len[b], band_loc[b]});
     }
     if (rep.bridge_length_mm > 0. || rep.overhang_wall_length_mm > 0.)
-        rep.verdict.message = std::to_string(rep.bridge_runs) + " bridge runs (longest " + std::to_string(rep.longest_bridge_mm) + " mm), " +
-                              std::to_string(rep.overhang_wall_length_mm) + " mm of overhang wall";
+        rep.verdict.message = std::to_string(rep.bridge_runs) + " bridge runs (longest " + num(rep.longest_bridge_mm) + " mm), " +
+                              num(rep.overhang_wall_length_mm) + " mm of overhang wall";
     else
         rep.verdict.message = "no bridges or overhang walls";
     return rep;
@@ -1528,10 +1556,10 @@ UnsupportedReport check_unsupported(const Print &print, const UnsupportedOptions
     if (rep.regions.size() > opt.max_regions)
         rep.regions.resize(opt.max_regions);
     if (rep.floating_islands > 0)
-        rep.verdict.raise("problem", std::to_string(rep.floating_islands) + " islands start in mid-air (" + std::to_string(rep.floating_area_mm2) + " mm2)");
+        rep.verdict.raise("problem", std::to_string(rep.floating_islands) + " islands start in mid-air (" + num(rep.floating_area_mm2) + " mm2)");
     if (rep.unsupported_area_mm2 > 0.)
         rep.verdict.raise(rep.max_distance_mm > 5. ? "warning" : "ok",
-                          std::to_string(rep.unsupported_area_mm2) + " mm2 overhang without support (farthest " + std::to_string(rep.max_distance_mm) + " mm)");
+                          num(rep.unsupported_area_mm2) + " mm2 overhang without support (farthest " + num(rep.max_distance_mm) + " mm)");
     if (rep.verdict.message.empty())
         rep.verdict.message = "everything rests on the layer below or on support";
     return rep;
@@ -1607,7 +1635,7 @@ FirstLayerReport check_first_layer(const Print &print, const MoveAnalysis *analy
                     fo.brim_length_mm += b.length;
             if (fo.raft) rep.has_raft = true;
             if (fo.aspect_ratio > aspect_warning && fo.brim_length_mm <= 0. && !fo.raft)
-                rep.verdict.raise("warning", fo.name + ": tall and thin (height/width " + std::to_string(fo.aspect_ratio) + ") without brim or raft");
+                rep.verdict.raise("warning", fo.name + ": tall and thin (height/width " + num(fo.aspect_ratio) + ") without brim or raft");
             rep.objects.push_back(fo);
         }
     }
@@ -1804,10 +1832,10 @@ ThinFeatureReport check_thin_features(const MoveAnalysis &analysis, const Print 
         if (rep.uncovered.size() > max_items)
             rep.uncovered.resize(max_items);
         if (rep.uncovered_area_mm2 > 0.)
-            rep.verdict.raise("warning", std::to_string(rep.uncovered_area_mm2) + " mm2 of the sliced layers is not covered by any extrusion");
+            rep.verdict.raise("warning", num(rep.uncovered_area_mm2) + " mm2 of the sliced layers is not covered by any extrusion");
     }
     if (rep.gap_fill_length_mm > 0.)
-        rep.verdict.raise("ok", std::to_string(rep.gap_fill_length_mm) + " mm gap fill on " + std::to_string(rep.layers_with_gap_fill) + " layers");
+        rep.verdict.raise("ok", num(rep.gap_fill_length_mm) + " mm gap fill on " + std::to_string(rep.layers_with_gap_fill) + " layers");
     if (rep.verdict.message.empty())
         rep.verdict.message = "no thin features detected";
     return rep;
@@ -1893,7 +1921,7 @@ MultiMaterialReport check_multi_material(const MoveAnalysis &analysis, const Pri
         rep.tower_brim_width = wt.brim_width;
     }
     rep.verdict.message = std::to_string(rep.tool_changes) + " filament changes, " + std::to_string(rep.filaments.size()) + " filaments, " +
-                          std::to_string(rep.tower_volume_mm3) + " mm3 prime tower, " + std::to_string(rep.flush_mm3) + " mm3 flush";
+                          num(rep.tower_volume_mm3) + " mm3 prime tower, " + num(rep.flush_mm3) + " mm3 flush";
     return rep;
 }
 

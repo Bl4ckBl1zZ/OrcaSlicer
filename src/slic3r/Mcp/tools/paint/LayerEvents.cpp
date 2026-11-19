@@ -29,6 +29,7 @@
 #include "../../McpIds.hpp"
 #include "../../McpSchema.hpp"
 #include "../../McpTool.hpp"
+#include "../../McpUtil.hpp"
 
 namespace Slic3r { namespace GUI { namespace Mcp { namespace Paint {
 
@@ -176,8 +177,25 @@ void refresh_plate(int plate_idx)
     // The slider keeps its own copy and writes it back on its next edit: give it ours.
     if (plate_idx == plates.get_curr_plate_index()) {
         if (GLCanvas3D* preview = plater->get_preview_canvas3D(); preview != nullptr) {
-            if (IMSlider* slider = preview->get_gcode_viewer().get_layers_slider(); slider != nullptr)
+            if (IMSlider* slider = preview->get_gcode_viewer().get_layers_slider(); slider != nullptr) {
+                // First the slider's mode for the plate as it is now (Preview::update_layers_slider_mode,
+                // private): with a mode left from an earlier slice that used several filaments, the
+                // slider takes filament changes as not allowed, erases them and writes that back.
+                bool can_change_color = true;
+                int  only_extruder    = -1;
+                if (wxGetApp().filaments_cnt() > 1) {
+                    if (PartPlate* plate = plates.get_plate(plate_idx); plate != nullptr) {
+                        const std::vector<int> used = plate->get_extruders_without_support();
+                        for (int extruder : used)
+                            if (extruder != used.front())
+                                can_change_color = false;
+                        if (!used.empty())
+                            only_extruder = used.front();
+                    }
+                }
+                slider->SetModeAndOnlyExtruder(true, only_extruder, can_change_color);
                 slider->SetTicksValues(plater->model().get_curr_plate_custom_gcodes());
+            }
             preview->set_as_dirty();
         }
     }
@@ -187,6 +205,9 @@ void refresh_plate(int plate_idx)
 
 json plate_layer_events(ToolContext& ctx)
 {
+    // The pause message is saved in the project and may be written into G-code (M117 in some firmware paths): one line only.
+    if (ctx.has("message"))
+        check_single_line(ctx.arg("message", ""), "message");
     const json&    args = ctx.args();
     Plater*        plater = wxGetApp().plater();
     Model&         model = plater->model();

@@ -18,6 +18,30 @@ ALL_CHECKS = ["flow", "speeds", "cooling", "supports", "overhangs", "unsupported
               "multi_material", "summary"]
 
 
+# Scene set-ups through the real tools (they used to be a debug fixture).
+def load_model(client, path) -> dict:
+    imported = client.tool("model_import", paths=[str(path)])["imported"]
+    return {"objects": [o["id"] for o in imported]}
+
+
+def plate_center(client):
+    """Centre of the printable area in plate coordinates (from the printer's printable_area)."""
+    area = client.tool("settings_get", scope="printer", keys=["printable_area"])["values"]["printable_area"]
+    pts = [tuple(float(v) for v in (p if isinstance(p, list) else p.split("x"))) for p in (area if isinstance(area, list) else area.split(","))]
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+
+
+def move_to_plate(client, obj, plate, offset=(0, 0)):
+    """Put the object on `plate` at the bed centre + `offset` (mm); one undo step."""
+    cx, cy = plate_center(client)
+    client.tool("object_transform", targets=[obj], move_to={"plate": plate, "center": [cx + offset[0], cy + offset[1]]})
+
+
+def add_plate(client) -> int:
+    return client.tool("plate_manage", action="add")["added"][0]
+
+
 @pytest.fixture(scope="module")
 def an_app(launch_app, out_dir):
     roots = ";".join(str(p) for p in (DATA, HANDY, out_dir))
@@ -171,7 +195,7 @@ def test_unknown_check_rejected_by_schema(c):
 def test_diff_after_change(m, sliced):
     require_core(m)
     m.tool("analyze", checks=["summary"])  # make sure the current result is known
-    m.tool("debug_slice_fixture", action="set", values={"sparse_infill_density": "40%"})
+    m.tool("settings_set", scope="process", values={"sparse_infill_density": "40%"})
     try:
         r = m.tool("slice", wait_s=200)
         assert r["status"] == "finished"
@@ -181,24 +205,24 @@ def test_diff_after_change(m, sliced):
         assert any("sparse_infill" in k for k in keys), keys
         assert d["after"]["weight_g"] > d["before"]["weight_g"]
     finally:
-        m.tool("debug_slice_fixture", action="set", values={"sparse_infill_density": "15%"})
+        m.tool("settings_set", scope="process", values={"sparse_infill_density": "15%"})
 
 
 def test_bridge_with_and_without_supports(m):
     require_core(m)
-    loaded = m.tool("debug_slice_fixture", action="load", path=str(DATA / "bridge.obj"))
+    loaded = load_model(m, str(DATA / "bridge.obj"))
     obj = loaded["objects"][0]
     scene = m.tool("scene_get")
     cube = [o["id"] for p in scene["plates"] for o in p["objects"] if "cube" in o["name"].lower()]
     try:
-        m.tool("debug_slice_fixture", action="move", object=cube[0], plate=1, offset=[60, 60])
-        m.tool("debug_slice_fixture", action="set", values={"enable_support": "0"})
+        move_to_plate(m, cube[0], 1, [60, 60])
+        m.tool("settings_set", scope="process", values={"enable_support": 0})
         assert m.tool("slice", wait_s=200)["status"] == "finished"
         without = m.tool("analyze", checks=["overhangs", "supports", "unsupported"])
         assert without["supports"]["volume_mm3"] == 0
         assert without["overhangs"]["bridge_length_mm"] > 0, without["overhangs"]
         assert without["overhangs"]["longest_bridge_mm"] > 5
-        m.tool("debug_slice_fixture", action="set", values={"enable_support": "1", "support_type": "normal(auto)"})
+        m.tool("settings_set", scope="process", values={"enable_support": 1, "support_type": "normal(auto)"})
         assert m.tool("slice", wait_s=200)["status"] == "finished"
         with_support = m.tool("analyze", checks=["supports"])
         sup = with_support["supports"]
@@ -206,21 +230,21 @@ def test_bridge_with_and_without_supports(m):
         assert sup["layers_with_support"] > 0 and sup["first_layer"] >= 1
         assert sup["box"] is not None
     finally:
-        m.tool("debug_slice_fixture", action="set", values={"enable_support": "0"})
-        m.tool("debug_slice_fixture", action="delete_object", object=obj)
-        m.tool("debug_slice_fixture", action="move", object=cube[0], plate=1, offset=[0, 0])
+        m.tool("settings_set", scope="process", values={"enable_support": 0})
+        m.tool("delete", targets=[obj])
+        move_to_plate(m, cube[0], 1, [0, 0])
 
 
 def test_two_filaments(m, out_dir):
     require_core(m)
-    added = m.tool("debug_slice_fixture", action="add_filament")
-    assert added["filaments"] >= 2
-    loaded = m.tool("debug_slice_fixture", action="load", path=str(DATA / "pyramid.obj"))
+    added = m.tool("filament_edit", action="add")
+    assert len(added["filaments"]) >= 2
+    loaded = load_model(m, str(DATA / "pyramid.obj"))
     pyramid = loaded["objects"][0]
     scene = m.tool("scene_get")
     cube = [o["id"] for p in scene["plates"] for o in p["objects"] if "cube" in o["name"].lower()][0]
     try:
-        m.tool("debug_slice_fixture", action="move", object=pyramid, plate=1, offset=[40, 0])
+        move_to_plate(m, pyramid, 1, [40, 0])
         m.tool("object_update", targets=[pyramid], filament=2)
         r = m.tool("slice", wait_s=250)
         assert r["status"] == "finished", r
@@ -246,4 +270,4 @@ def test_two_filaments(m, out_dir):
                 colours = {i["color"] for i in shot.data["legend"]["items"]}
                 assert len(colours) >= 2, shot.data["legend"]
     finally:
-        m.tool("debug_slice_fixture", action="delete_object", object=pyramid)
+        m.tool("delete", targets=[pyramid])

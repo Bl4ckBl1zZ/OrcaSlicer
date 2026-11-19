@@ -80,6 +80,8 @@ double primitive_angle_step(double radius)
 
 json object_add_primitive(ToolContext& ctx)
 {
+    if (ctx.has("name"))
+        check_single_line(ctx.arg("name", ""), "name");
     const std::string shape = ctx.arg("shape", "");
     const int         plate_idx = Ids::plate(ctx.has("plate") ? ctx.args()["plate"] : json(), "plate");
     if (plates().get_plate(plate_idx)->is_locked())
@@ -909,6 +911,8 @@ json object_split(ToolContext& ctx)
 
 json object_merge(ToolContext& ctx)
 {
+    if (ctx.has("name"))
+        check_single_line(ctx.arg("name", ""), "name");
     Model&                     m = model();
     const std::vector<ItemRef> refs = Ids::items(ctx.args()["targets"], "targets");
     // (object index, instance indices) taken into the assembly.
@@ -1101,7 +1105,7 @@ json object_cut(ToolContext& ctx)
 json mesh_edit(ToolContext& ctx)
 {
     Model&                     m = model();
-    const std::string          op = ctx.arg("op", "");
+    const std::string          op = ctx.arg("action", "");
     const std::vector<ItemRef> refs = Ids::items(ctx.args()["targets"], "targets");
     // (obj_idx, vol_idx) for volume operations; object indices for object operations.
     std::vector<std::pair<int, int>> volumes;
@@ -1195,7 +1199,7 @@ json mesh_edit(ToolContext& ctx)
             ref.object->ensure_on_bed();
         }
     } else
-        fail("invalid_argument", "Unknown `op` \"" + op + "\".", "Use simplify, repair, convert_units or scale_to_fit.");
+        fail("invalid_argument", "Unknown `action` \"" + op + "\".", "Use simplify, repair, convert_units or scale_to_fit.");
 
     std::vector<int> idxs(objects.begin(), objects.end());
     for (int o : idxs) {
@@ -1254,8 +1258,8 @@ MCP_TOOL_GROUP(Objects)
             "`frame`: \"plate\"/\"world\" (axes of the bed, default) or \"local\" (the item's own axes) for rotate, mirror, translate. "
             "lay_flat puts a face on the bed: {facet: n, volume?} (a mesh facet id), {normal: [x,y,z], frame: world|object} (the "
             "direction that should face down), {face: n} (a face number from mesh_query flat_faces), or {auto: true, rank?} (the "
-            "largest flat face of the convex hull; rank 2 = second largest; candidates are returned). Parts are transformed in their object's frame (translate, rotate, scale, mirror, "
-            "set_*). drop_to_bed (default true) puts each instance's lowest point at z = 0; move_to.z_min > 0 switches the object's "
+            "largest flat face of the convex hull; rank 2 = second largest; candidates are returned). Parts and bodies (v ids) are transformed in their object's frame "
+            "(relative steps; for an absolute, bed-aligned pose of a body use modifier_update place / size). drop_to_bed (default true) puts each instance's lowest point at z = 0; move_to.z_min > 0 switches the object's "
             "auto-drop off. One undo step. Returns the changed objects with new boxes and plate assignments.";
         tool.input_schema = Schema::parse(R"JSON({
             "type": "object",
@@ -1322,7 +1326,7 @@ MCP_TOOL_GROUP(Objects)
     {
         ToolDef tool;
         tool.name = "delete";
-        tool.title = "Delete objects, instances or parts";
+        tool.title = "Delete objects, instances, parts or bodies";
         tool.description =
             "Delete objects, instances (deleting every instance deletes the object) or parts and modifiers (the last solid part of an "
             "object cannot be deleted: last_part). One undo step. Returns the removed ids and the scene summary.";
@@ -1460,7 +1464,7 @@ MCP_TOOL_GROUP(Objects)
         tool.name = "mesh_edit";
         tool.title = "Simplify, repair, convert units, scale to fit";
         tool.description =
-            "Change meshes. op \"simplify\": decimate every volume of the targets (or the given parts) to target_ratio of its facets "
+            "Change meshes. action \"simplify\": decimate every volume of the targets (or the given parts) to target_ratio of its facets "
             "(default 0.5), or target_facets, or until max_error_mm; \"repair\": close holes, fix orientation, remove "
             "self-intersections of solid parts (CGAL, available on every platform); both run as a job on a worker thread (wait_s, "
             "job_status, job_cancel) and give the volumes new ids (returned). Paint is remapped when the app's keep_painting "
@@ -1470,7 +1474,7 @@ MCP_TOOL_GROUP(Objects)
         tool.input_schema = Schema::parse(R"JSON({
             "type": "object",
             "properties": {
-                "op": {"enum": ["simplify", "repair", "convert_units", "scale_to_fit"]},
+                "action": {"enum": ["simplify", "repair", "convert_units", "scale_to_fit"]},
                 "targets": {"type": "array", "items": {"$ref": "#/$defs/Id"}, "minItems": 1},
                 "target_ratio": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
                 "target_facets": {"type": "integer", "minimum": 4},
@@ -1479,7 +1483,7 @@ MCP_TOOL_GROUP(Objects)
                 "margin": {"type": "number", "minimum": 0, "default": 0},
                 "wait_s": {"type": "number", "minimum": 0, "maximum": 280, "default": 100}
             },
-            "required": ["op", "targets"],
+            "required": ["action", "targets"],
             "additionalProperties": false})JSON", "mesh_edit");
         tool.destructive = true;
         tool.handler = mesh_edit;

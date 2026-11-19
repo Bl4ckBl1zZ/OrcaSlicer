@@ -132,9 +132,15 @@ def test_open_shipped_project(emodern):
     result = emodern.call("project_open", {"path": str(PROJECT_3MF)})
     data = result.data
     if result.is_error:
-        # Projects carrying presets with custom G-code need trust_embedded_gcode.
-        assert data["error"]["code"] == "dialog_blocked"
-        data = emodern.tool("project_open", path=str(PROJECT_3MF), trust_embedded_gcode=True, on_unsaved="discard")
+        # Projects carrying presets with custom G-code are refused and the load is undone. Trusting them
+        # needs the user's mcp_allow_gcode_edit preference, which this instance does not have.
+        assert data["error"]["code"] == "untrusted_gcode", data
+        assert data["error"]["details"]["questions"], data
+        assert all_objects(emodern) == {}
+        failure = emodern.tool_error("project_open", path=str(PROJECT_3MF), trust_embedded_gcode=True, on_unsaved="discard")
+        assert failure.code == "forbidden_key", failure
+        assert all_objects(emodern) == {}
+        return
     assert len(data["changed"]["objects"]) >= 1
 
 

@@ -1,4 +1,4 @@
-"""Modifier bodies and height ranges: modifier_add, modifier_update, modifier_delete, layer_range.
+"""Modifier bodies and height ranges: modifier_add, modifier_update, layer_range (bodies are removed with `delete`).
 
 Runs on the shared instance (the 20 mm cube); every test undoes what it changed.
 """
@@ -192,7 +192,7 @@ def test_key_not_in_scope_lists_the_scopes(client):
 
 
 # ---------------------------------------------------------------------------------------------
-# modifier_update / modifier_delete
+# modifier_update / delete
 # ---------------------------------------------------------------------------------------------
 
 def test_update_type_name_filament_and_pose(modern):
@@ -234,10 +234,12 @@ def test_delete_body_and_last_part(modern):
     added = modern.tool("modifier_add", object=obj["id"], type="support_enforcer", shape={"primitive": "cube", "size": [3, 3, 3]})
     vid = added["volume"]["id"]
     try:
-        assert modern.tool_error("modifier_delete", targets=[obj["volumes"][0]["id"]]).code == "last_part"
-        assert modern.tool_error("modifier_delete", targets=[obj["id"]]).code == "invalid_argument"
-        deleted = modern.tool("modifier_delete", targets=[vid])
-        assert deleted["deleted"] == [vid] and len(deleted["changed"][0]["volumes"]) == 1
+        # Bodies are deleted with the general `delete` tool (modifier_delete was folded into it).
+        assert modern.tool_error("delete", targets=[obj["volumes"][0]["id"]]).code == "last_part"
+        assert "modifier_delete" not in {t["name"] for t in modern.list_tools()}
+        deleted = modern.tool("delete", targets=[vid])
+        assert deleted["removed"] == [vid]
+        assert len(cube(modern)["volumes"]) == 1
         undo(modern)
         assert any(v["id"] == vid for v in cube(modern)["volumes"])
     finally:

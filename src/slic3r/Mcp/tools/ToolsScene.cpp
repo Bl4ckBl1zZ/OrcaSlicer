@@ -122,6 +122,8 @@ json scene_get(ToolContext& ctx)
 
 json object_update(ToolContext& ctx)
 {
+    if (ctx.has("name"))
+        check_single_line(ctx.arg("name", ""), "name");
     Plater*      plater = wxGetApp().plater();
     const bool   has_name = ctx.has("name");
     const bool   has_printable = ctx.has("printable");

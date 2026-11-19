@@ -39,6 +39,7 @@
 #include "../McpRefresh.hpp"
 #include "../McpScene.hpp"
 #include "../McpSchema.hpp"
+#include "../McpSettings.hpp"
 #include "../McpTool.hpp"
 #include "settings/PresetOps.hpp"
 #include "settings/SettingsCommon.hpp"
@@ -86,8 +87,9 @@ json diff_configs(const DynamicPrintConfig& before, const DynamicPrintConfig& af
             continue;
         json item = json::object();
         item["key"] = key;
-        item["old"] = a != nullptr ? config_value_json(*a) : json(nullptr);
-        item["new"] = b != nullptr ? config_value_json(*b) : json(nullptr);
+        // Redacts secrets (print host, credentials); null when the key is absent.
+        item["old"] = Settings::value_json_for(before, key);
+        item["new"] = Settings::value_json_for(after, key);
         out.push_back(std::move(item));
     }
     return out;
@@ -405,31 +407,6 @@ json settings_set(ToolContext& ctx)
     return set_model_scope(ctx, scope, values, reset);
 }
 
-// Test only (debug tools): save the project to a 3MF and load it back, so the settings group can test
-// round trips before the project tools of the edit group are merged.
-json debug_settings_project(ToolContext& ctx)
-{
-    const std::string action = ctx.arg("action", "");
-    const std::string path = ctx.arg("path", "");
-    json out = json::object();
-    if (action == "save") {
-        const boost::filesystem::path target = Files::check_write(path, {".3mf"}, true, "path");
-        if (plater().export_3mf(target) < 0)
-            fail("export_failed", "Saving the project to \"" + target.string() + "\" failed.");
-        out["saved"] = target.string();
-    } else {
-        const boost::filesystem::path source = Files::check_read(path, {".3mf"}, "path");
-        // Loading over a modified project asks whether to save it first: no.
-        ctx.on_dialog({"", "save", DialogAnswer::No, true});
-        ctx.on_dialog({"", "", DialogAnswer::Default, true});
-        plater().load_project(wxString::FromUTF8(source.string()));
-        out["loaded"] = source.string();
-        out["scene"] = Scene::summary_json();
-    }
-    out["ok"] = true;
-    return out;
-}
-
 // Test only: what the GUI shows, to check that a change reached the window. The object list rows
 // of every object (type, name, children), the preset selectors' texts (with the "(modified)"
 // marker), whether a row shows the "has overrides" icon, and the filament colours the plater renders with.
@@ -511,22 +488,6 @@ MCP_TOOL_GROUP(SettingsEdit)
         tool.debug_only = true;
         tool.read_only = true;
         tool.handler = debug_settings_ui;
-        registry.add(std::move(tool));
-    }
-    {
-        ToolDef tool;
-        tool.name = "debug_settings_project";
-        tool.title = "Test only: save / load a 3MF";
-        tool.description = "Test only. Saves the project to a 3MF file in the write roots, or loads one (replacing the project).";
-        tool.input_schema = Schema::parse(R"JSON({
-            "type": "object",
-            "properties": {"action": {"enum": ["save", "load"]}, "path": {"type": "string", "minLength": 1}},
-            "required": ["action", "path"],
-            "additionalProperties": false})JSON", "debug_settings_project");
-        tool.debug_only = true;
-        tool.destructive = true;
-        tool.accepts_if_rev = false;
-        tool.handler = debug_settings_project;
         registry.add(std::move(tool));
     }
     ToolDef tool;

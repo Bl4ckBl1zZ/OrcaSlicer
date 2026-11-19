@@ -548,6 +548,12 @@ CameraRequest CameraRequest::from_json(const json& value)
     return out;
 }
 
+CameraView Renderer::camera_for(const CameraRequest& request, int width, int height, const Vec3d& plate_origin, const BoundingBoxf3& plate_box,
+                                const BoundingBoxf3& content_box, const BoundingBoxf3& ids_box)
+{
+    return make_camera(request, width, height, plate_origin, plate_box, content_box, ids_box);
+}
+
 Picture Renderer::render_custom(int plate_idx, int width, int height, const CameraRequest& camera_request, const BoundingBoxf3& scene_box, bool show_bed,
                                 const std::string& format, const std::function<void(const RenderTarget&)>& pass)
 {

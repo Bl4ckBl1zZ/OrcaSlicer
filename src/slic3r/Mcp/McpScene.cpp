@@ -1,5 +1,6 @@
 #include "McpScene.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <vector>
@@ -423,6 +424,46 @@ json filaments_json()
         out.push_back(std::move(item));
     }
     return out;
+}
+
+json filament_used_by(int slot)
+{
+    json objects = json::array(), parts = json::array(), ranges = json::array(), paint = json::array();
+    for (const ModelObject* object : plater().model().objects) {
+        const int object_filament = object->config.has("extruder") ? object->config.extruder() : 1;
+        bool      inherits = false;
+        for (const ModelVolume* volume : object->volumes) {
+            const int own = volume->config.has("extruder") ? volume->config.extruder() : 0;
+            if (own == slot && (volume->is_model_part() || volume->is_modifier()))
+                parts.push_back(Ids::of(*volume));
+            if (own == 0 && volume->is_model_part())
+                inherits = true;
+            if (!volume->mmu_segmentation_facets.empty()) {
+                const std::vector<size_t> painted = volume->get_extruders_from_multi_material_painting();
+                if (std::find(painted.begin(), painted.end(), static_cast<size_t>(slot - 1)) != painted.end())
+                    paint.push_back(Ids::of(*volume));
+            }
+        }
+        if (inherits && object_filament == slot)
+            objects.push_back(Ids::of(*object));
+        for (const auto& [range, config] : object->layer_config_ranges)
+            if (config.has("extruder") && config.get().opt_int("extruder") == slot)
+                ranges.push_back({{"object", Ids::of(*object)}, {"z_min", round4(range.first)}, {"z_max", round4(range.second)}});
+    }
+    json out = json::object();
+    out["objects"] = std::move(objects);
+    out["parts"] = std::move(parts);
+    out["layer_ranges"] = std::move(ranges);
+    out["paint"] = std::move(paint);
+    return out;
+}
+
+bool filament_in_use(const json& used_by)
+{
+    for (const char* key : {"objects", "parts", "layer_ranges", "paint"})
+        if (used_by.contains(key) && !used_by[key].empty())
+            return true;
+    return false;
 }
 
 json summary_json()

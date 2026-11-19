@@ -19,6 +19,7 @@
 #include "../McpScene.hpp"
 #include "../McpSchema.hpp"
 #include "../McpTool.hpp"
+#include "../McpUtil.hpp"
 #include "edit/EditCommon.hpp"
 
 namespace Slic3r { namespace GUI { namespace Mcp {
@@ -47,6 +48,8 @@ json plates_json()
 
 json plate_manage(ToolContext& ctx)
 {
+    if (ctx.has("name"))
+        check_single_line(ctx.arg("name", ""), "name");
     Plater&           p = plater();
     PartPlateList&    list = plates();
     const std::string action = ctx.arg("action", "");

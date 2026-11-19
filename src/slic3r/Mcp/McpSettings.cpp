@@ -361,7 +361,9 @@ std::vector<std::string> nearest_keys(const std::string& key, size_t count)
 
 bool is_secret(const std::string& key)
 {
-    return key == "printhost_apikey" || key == "printhost_password";
+    // Credentials, and where the printer is and how to reach it: an agent never reads them.
+    return key == "printhost_apikey" || key == "printhost_password" || key == "printhost_user" || key == "printhost_port" ||
+           key == "printhost_cafile" || key == "print_host" || key == "print_host_webui" || key == "flashforge_serial_number";
 }
 
 std::string write_refusal(const std::string& key)
@@ -369,7 +371,8 @@ std::string write_refusal(const std::string& key)
     const ConfigOptionDef* def = find_def(key);
     if (key == "post_process")
         return "post-processing scripts are programs that run on export";
-    if (key == "print_host" || key.rfind("printhost_", 0) == 0 || key == "bbl_use_printhost" || key == "printer_agent" || key == "print_host_webui")
+    if (key == "print_host" || key.rfind("printhost_", 0) == 0 || key == "bbl_use_printhost" || key == "printer_agent" || key == "print_host_webui" ||
+        key == "host_type" || key == "flashforge_serial_number")
         return "it holds the printer's address or credentials";
     if (def != nullptr && def->is_plugin_backed())
         return "choosing a plug-in can install software";
@@ -692,6 +695,31 @@ json effective_value(const Scope& scope, const std::string& key, const DynamicPr
     out["value"] = std::move(value);
     out["source"] = source;
     return out;
+}
+
+const ConfigOption* effective_option(const ModelObject& object, const ModelVolume* volume, const std::string& key)
+{
+    if (volume != nullptr && volume->config.has(key))
+        return volume->config.get().option(key);
+    if (object.config.has(key))
+        return object.config.get().option(key);
+    const ModelObjectPtrs& objects = wxGetApp().plater()->model().objects;
+    const auto             found = std::find(objects.begin(), objects.end(), &object);
+    const int              obj_idx = found == objects.end() ? -1 : static_cast<int>(found - objects.begin());
+    if (obj_idx >= 0 && !object.instances.empty() && allowed_on_plate(key)) {
+        const int plate_idx = Ids::plate_of_instance(obj_idx, 0);
+        if (plate_idx >= 0)
+            if (const DynamicPrintConfig* config = plate_at(plate_idx)->config(); config != nullptr && config->option(key) != nullptr)
+                return config->option(key);
+    }
+    PresetBundle& bundle = *wxGetApp().preset_bundle;
+    for (const ConfigBase* config : {static_cast<const ConfigBase*>(&bundle.prints.get_edited_preset().config),
+                                     static_cast<const ConfigBase*>(&bundle.printers.get_edited_preset().config),
+                                     static_cast<const ConfigBase*>(&bundle.filaments.get_edited_preset().config),
+                                     static_cast<const ConfigBase*>(&bundle.project_config)})
+        if (const ConfigOption* option = config->option(key); option != nullptr)
+            return option;
+    return nullptr;
 }
 
 } // namespace Settings

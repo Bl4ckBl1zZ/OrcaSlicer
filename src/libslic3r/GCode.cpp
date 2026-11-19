@@ -155,6 +155,17 @@ namespace Slic3r {
 
 namespace {
 
+// Object and plate names come from projects and from automation (MCP): a line break in one would
+// end a G-code comment and start a command. Control characters become spaces wherever a name is
+// written into G-code.
+std::string gcode_single_line(std::string text)
+{
+    for (char &ch : text)
+        if (static_cast<unsigned char>(ch) < 0x20 || static_cast<unsigned char>(ch) == 0x7F)
+            ch = ' ';
+    return text;
+}
+
 // Follow XY commands in a generated G-code block. This deliberately handles
 // only standard motion/modal commands: an opaque macro that moves the head is
 // already outside the position guarantees made by GCodeWriter.
@@ -4050,9 +4061,9 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
         this->placeholder_parser().set("first_layer_temperature", new ConfigOptionInts(m_config.nozzle_temperature_initial_layer));
         this->placeholder_parser().set("max_print_height",new ConfigOptionInt(m_config.printable_height));
         this->placeholder_parser().set("z_offset", new ConfigOptionFloat(m_config.z_offset));
-        this->placeholder_parser().set("model_name", new ConfigOptionString(print.get_model_name()));
+        this->placeholder_parser().set("model_name", new ConfigOptionString(gcode_single_line(print.get_model_name())));
         this->placeholder_parser().set("plate_number", new ConfigOptionString(print.get_plate_number_formatted()));
-        this->placeholder_parser().set("plate_name", new ConfigOptionString(print.get_plate_name()));
+        this->placeholder_parser().set("plate_name", new ConfigOptionString(gcode_single_line(print.get_plate_name())));
         this->placeholder_parser().set("first_layer_height", new ConfigOptionFloat(m_config.initial_layer_print_height.value));
 
         auto used_filaments = print.get_slice_used_filaments(false);
@@ -5904,7 +5915,8 @@ namespace Skirt {
 std::string sanitize_instance_name(const std::string& name) {
     // Replace sequences of non-word characters with an underscore
     static const std::regex non_word_characters("[ !@#$%^&*()=+\\[\\]{};:\",']+");
-    std::string result = std::regex_replace(name, non_word_characters, "_");
+    // Control characters (line breaks) become spaces first, so the regex turns them into '_' too.
+    std::string result = std::regex_replace(gcode_single_line(name), non_word_characters, "_");
     // Remove leading and trailing underscores
     if (!result.empty() && result.front() == '_') {
         result.erase(result.begin());
@@ -7651,7 +7663,7 @@ LayerResult GCode::process_layer(
                     m_avoid_crossing_perimeters.init_layer(*m_layer);
 
                 if (this->config().gcode_label_objects) {
-                    gcode += std::string("; printing object ") + instance_to_print.print_object.model_object()->name +
+                    gcode += std::string("; printing object ") + gcode_single_line(instance_to_print.print_object.model_object()->name) +
                              " id:" + std::to_string(instance_to_print.print_object.get_id()) + " copy " +
                              std::to_string(inst.id) + "\n";
                 }
@@ -7807,7 +7819,7 @@ LayerResult GCode::process_layer(
 
                 if (this->config().gcode_label_objects) {
                     gcode += std::string("; stop printing object ") +
-                             instance_to_print.print_object.model_object()->name +
+                             gcode_single_line(instance_to_print.print_object.model_object()->name) +
                              " id:" + std::to_string(instance_to_print.print_object.get_id()) + " copy " +
                              std::to_string(inst.id) + "\n";
                 }
@@ -7885,7 +7897,7 @@ LayerResult GCode::process_layer(
                     m_avoid_crossing_perimeters.init_layer(*m_layer);
 
                 if (this->config().gcode_label_objects) {
-                    gcode += std::string("; printing object ") + instance_to_print.print_object.model_object()->name +
+                    gcode += std::string("; printing object ") + gcode_single_line(instance_to_print.print_object.model_object()->name) +
                              " id:" + std::to_string(instance_to_print.print_object.get_id()) + " copy " +
                              std::to_string(inst.id) + "\n";
                 }

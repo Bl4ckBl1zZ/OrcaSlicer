@@ -116,10 +116,17 @@ MCP_TOOL_GROUP(View)
         }
         description += " view \"" + plugin.name + "\": " + plugin.description;
     }
+    std::string overlays;
     for (const OverlayPlugin& plugin : RenderPlugins::overlays()) {
-        schema["properties"]["editor"]["properties"]["overlay"]["enum"].push_back(plugin.name);
-        description += " overlay \"" + plugin.name + "\": " + plugin.description;
+        json& editor = schema["properties"]["editor"]["properties"];
+        editor["overlay"]["enum"].push_back(plugin.name);
+        if (plugin.options_schema.is_object())
+            for (auto it = plugin.options_schema.begin(); it != plugin.options_schema.end(); ++it)
+                editor[it.key()] = it.value();
+        overlays += (overlays.empty() ? "" : "; ") + plugin.name + ": " + plugin.description;
     }
+    if (!overlays.empty())
+        description += " editor.overlay draws extra information over the parts - " + overlays + ".";
 
     ToolDef tool;
     tool.name = "screenshot";

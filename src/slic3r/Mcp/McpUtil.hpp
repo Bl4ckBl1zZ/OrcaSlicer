@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <string>
 
+#include "McpError.hpp"
 #include "McpJson.hpp"
 
 namespace Slic3r { namespace GUI { namespace Mcp {
@@ -90,6 +91,32 @@ inline std::string to_lower_ascii(std::string s)
 inline bool contains_ci(const std::string& haystack, const std::string& needle)
 {
     return needle.empty() || to_lower_ascii(haystack).find(to_lower_ascii(needle)) != std::string::npos;
+}
+
+// True when `text` holds an ASCII control character (below 0x20, or DEL).
+inline bool has_control_chars(const std::string& text)
+{
+    for (char ch : text) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (c < 0x20 || c == 0x7F)
+            return true;
+    }
+    return false;
+}
+
+// Names and messages an agent gives (object, part, plate, preset and project names, pause
+// messages) end up in G-code comments, file headers and the UI: a line break there would start a
+// new G-code line. Fails with invalid_argument when `text` holds a control character; `what` names
+// the argument.
+inline void check_single_line(const std::string& text, const char* what)
+{
+    for (size_t i = 0; i < text.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c < 0x20 || c == 0x7F)
+            fail("invalid_argument",
+                 std::string("`") + what + "` must not contain control characters (line breaks, tabs ...); found one at byte " + std::to_string(i) + ".",
+                 "Use a single line of printable text.", json::object({{"argument", what}, {"position", i}}));
+    }
 }
 
 // Serialises without throwing on invalid UTF-8 (file names from odd sources): bad bytes become U+FFFD.

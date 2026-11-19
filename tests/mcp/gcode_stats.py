@@ -1,7 +1,7 @@
 """Slices a saved project with the application's own command-line slicer and reads the G-code back.
 
 Used by the settings group's effect tests while the slicing tools live on another branch: the project
-is saved to a 3MF (debug_settings_project), sliced by `orca-slicer --slice 0` in a private data
+is saved to a 3MF (project_save copy), sliced by `orca-slicer --slice 0` in a private data
 directory, and the G-code is reduced to per-layer, per-feature extrusion with positions.
 """
 

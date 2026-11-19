@@ -19,7 +19,9 @@
 
 #include "../McpScene.hpp"
 #include "../McpSchema.hpp"
+#include "../McpSettings.hpp"
 #include "../McpTool.hpp"
+#include "../McpUtil.hpp"
 #include "settings/PresetOps.hpp"
 
 namespace Slic3r { namespace GUI { namespace Mcp {
@@ -76,7 +78,7 @@ json do_select(ToolContext& ctx, const SelectRequest& request)
     out["ok"] = true;
     out["type"] = type_name(request.type);
     if (request.type == Preset::TYPE_FILAMENT)
-        out["slot"] = request.slot;
+        out["filament"] = request.slot;
     out["before"] = outcome.before;
     out["selected"] = outcome.after;
     out["changed"] = outcome.changed;
@@ -113,17 +115,19 @@ json do_select(ToolContext& ctx, const SelectRequest& request)
 
 json preset_select(ToolContext& ctx)
 {
+    if (ctx.has("save_as"))
+        check_single_line(ctx.arg("save_as", ""), "save_as");
     SelectRequest request;
     request.type = type_from(ctx.arg("type", ""));
     request.name = ctx.arg("name", "");
     request.on_unsaved = on_unsaved_from(ctx.arg("on_unsaved", "fail"));
     request.save_as = ctx.arg("save_as", "");
     if (request.type == Preset::TYPE_FILAMENT) {
-        if (!ctx.has("slot"))
-            fail("invalid_argument", "A filament preset is selected for a slot: give `slot` (1-based).", "filament_list shows the slots.");
-        request.slot = ctx.arg<int>("slot", 0);
-    } else if (ctx.has("slot")) {
-        fail("invalid_argument", "`slot` applies to type filament only.");
+        if (!ctx.has("filament"))
+            fail("invalid_argument", "A filament preset is selected for a slot: give `filament` (1-based slot).", "filament_list shows the slots.");
+        request.slot = ctx.arg<int>("filament", 0);
+    } else if (ctx.has("filament")) {
+        fail("invalid_argument", "`filament` applies to type filament only.");
     }
     if (request.on_unsaved == OnUnsaved::Save && ctx.has("save_as") && request.save_as.empty())
         fail("invalid_argument", "`save_as` must not be empty.");
@@ -136,12 +140,12 @@ json preset_select(ToolContext& ctx)
 
 void check_tab_slot(Preset::Type type, ToolContext& ctx)
 {
-    if (type != Preset::TYPE_FILAMENT || !ctx.has("slot"))
+    if (type != Preset::TYPE_FILAMENT || !ctx.has("filament"))
         return;
-    const int     slot = ctx.arg<int>("slot", 0);
+    const int     slot = ctx.arg<int>("filament", 0);
     PresetBundle& b = bundle();
     if (slot < 1 || static_cast<size_t>(slot) > b.filament_presets.size())
-        fail("invalid_argument", "`slot`: there is no filament slot " + std::to_string(slot) + ".");
+        fail("invalid_argument", "`filament`: there is no filament slot " + std::to_string(slot) + ".");
     const Preset* slot_preset = b.filaments.find_preset(b.filament_presets[static_cast<size_t>(slot) - 1], false);
     if (slot_preset == nullptr || slot_preset->name != b.filaments.get_edited_preset().name)
         fail("nothing_modified",
@@ -151,6 +155,8 @@ void check_tab_slot(Preset::Type type, ToolContext& ctx)
 
 json preset_save(ToolContext& ctx)
 {
+    if (ctx.has("name"))
+        check_single_line(ctx.arg("name", ""), "name");
     const Preset::Type type = type_from(ctx.arg("type", ""));
     const std::string  action = ctx.arg("action", "save");
     PresetCollection&  c = collection(type);
@@ -368,6 +374,7 @@ void rename_preset(Preset::Type type, const std::string& from, const std::string
 
 json preset_rename(ToolContext& ctx)
 {
+    check_single_line(ctx.arg("new_name", ""), "new_name");
     const Preset::Type type = type_from(ctx.arg("type", ""));
     PresetCollection&  c = collection(type);
     const std::string  from = user_preset(type, ctx.arg("name", "")).name;
@@ -439,8 +446,9 @@ json preset_diff(ToolContext& ctx)
             continue;
         json item = json::object();
         item["key"] = key;
-        item["a"] = va != nullptr ? config_value_json(*va) : json(nullptr);
-        item["b"] = vb != nullptr ? config_value_json(*vb) : json(nullptr);
+        // value_json_for redacts secrets (print host, credentials); null when the key is absent.
+        item["a"] = Settings::value_json_for(a, key);
+        item["b"] = Settings::value_json_for(b, key);
         differences.push_back(std::move(item));
     }
     json out = json::object();
@@ -477,7 +485,7 @@ MCP_TOOL_GROUP(Presets)
             "properties": {
                 "type": {"enum": ["process", "printer", "filament"]},
                 "name": {"type": "string", "minLength": 1},
-                "slot": {"type": "integer", "minimum": 1, "description": "Filament slot (type filament)."},
+                "filament": {"type": "integer", "minimum": 1, "description": "1-based filament slot (type filament)."},
                 "on_unsaved": {"enum": ["fail", "discard", "carry_over", "save"], "default": "fail"},
                 "save_as": {"type": "string", "minLength": 1, "description": "Name to save the edits under (on_unsaved save)."}
             },
@@ -496,7 +504,7 @@ MCP_TOOL_GROUP(Presets)
             "action save: save the edited printer, process or filament preset (the one in its settings tab, with the edits settings_set made) "
             "as a user preset. Without `name` it overwrites the current user preset; a system preset needs a new `name` (system_preset). An "
             "existing name fails with name_exists unless overwrite: true; saving selects the saved preset. action discard: drop the unsaved "
-            "edits (nothing_modified when there are none); history revert re-applies them. For a filament, `slot` checks that the tab edits "
+            "edits (nothing_modified when there are none); history revert re-applies them. For a filament, `filament` (slot) checks that the tab edits "
             "that slot's preset. Recorded in the journal. Returns the name and the keys saved.";
         tool.input_schema = Schema::parse(R"JSON({
             "type": "object",
@@ -505,7 +513,7 @@ MCP_TOOL_GROUP(Presets)
                 "action": {"enum": ["save", "discard"], "default": "save"},
                 "name": {"type": "string", "minLength": 1, "maxLength": 200},
                 "overwrite": {"type": "boolean", "default": false},
-                "slot": {"type": "integer", "minimum": 1}
+                "filament": {"type": "integer", "minimum": 1, "description": "1-based filament slot whose preset the tab must be editing."}
             },
             "required": ["type"],
             "additionalProperties": false})JSON", "preset_save");

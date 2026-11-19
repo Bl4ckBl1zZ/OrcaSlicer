@@ -327,42 +327,10 @@ json preset_list(ToolContext& ctx)
 
 json filament_list(ToolContext&)
 {
-    const Model& model = wxGetApp().plater()->model();
-    json         list = Scene::filaments_json();
+    json list = Scene::filaments_json();
 
-    // Where each slot is used: as the filament of an object, of a part, or in colour painting.
-    const size_t count = list.size();
-    std::vector<json> objects(count, json::array()), parts(count, json::array()), paint(count, json::array());
-    for (const ModelObject* object : model.objects) {
-        const int object_slot = object->config.has("extruder") ? object->config.extruder() : 1;
-        bool      object_uses_own = false;
-        for (const ModelVolume* volume : object->volumes) {
-            if (!volume->is_model_part() && !volume->is_modifier())
-                continue;
-            const int volume_slot = volume->config.has("extruder") ? volume->config.extruder() : 0;
-            if (volume_slot >= 1 && volume_slot <= static_cast<int>(count))
-                parts[static_cast<size_t>(volume_slot - 1)].push_back(Ids::of(*volume));
-            else if (volume->is_model_part())
-                object_uses_own = true;
-            // Slots that appear only through painting on this volume.
-            if (!volume->mmu_segmentation_facets.empty())
-                for (int used : volume->get_extruders())
-                    if (used >= 1 && used <= static_cast<int>(count) && used != volume_slot && !(volume_slot == 0 && used == object_slot)) {
-                        json& target = paint[static_cast<size_t>(used - 1)];
-                        if (std::find(target.begin(), target.end(), json(Ids::of(*volume))) == target.end())
-                            target.push_back(Ids::of(*volume));
-                    }
-        }
-        if (object_uses_own && object_slot >= 1 && object_slot <= static_cast<int>(count))
-            objects[static_cast<size_t>(object_slot - 1)].push_back(Ids::of(*object));
-    }
-    for (size_t i = 0; i < count; ++i) {
-        json used = json::object();
-        used["objects"] = std::move(objects[i]);
-        used["parts"] = std::move(parts[i]);
-        used["paint"] = std::move(paint[i]);
-        list[i]["used_by"] = std::move(used);
-    }
+    for (size_t i = 0; i < list.size(); ++i)
+        list[i]["used_by"] = Scene::filament_used_by(static_cast<int>(i) + 1);
     json out = json::object();
     out["filaments"] = std::move(list);
     return out;

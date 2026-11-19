@@ -26,6 +26,39 @@ const char* const META_SUBSCRIPTION_ID = "io.modelcontextprotocol/subscriptionId
 
 const int LIST_TTL_MS = 3600000;
 
+// Deepest nesting of arrays and objects accepted in a request body. Real requests stay far below;
+// json values are copied and destroyed recursively, so a body of thousands of '[' would overflow the
+// stack long after parsing.
+const int MAX_JSON_DEPTH = 64;
+
+// True when `body` nests arrays / objects deeper than MAX_JSON_DEPTH. Brackets inside strings (with
+// their escapes) do not count. A scan of the raw text: runs before anything is parsed.
+bool nested_too_deep(const std::string& body)
+{
+    int  depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (const char ch : body) {
+        if (in_string) {
+            if (escaped)
+                escaped = false;
+            else if (ch == '\\')
+                escaped = true;
+            else if (ch == '"')
+                in_string = false;
+            continue;
+        }
+        if (ch == '"')
+            in_string = true;
+        else if (ch == '[' || ch == '{') {
+            if (++depth > MAX_JSON_DEPTH)
+                return true;
+        } else if ((ch == ']' || ch == '}') && depth > 0)
+            --depth;
+    }
+    return false;
+}
+
 bool contains(const std::vector<std::string>& list, const std::string& value)
 {
     return std::find(list.begin(), list.end(), value) != list.end();
@@ -218,6 +251,9 @@ json Protocol::tool_response(const json& id, bool modern, const CallResult& call
 Reply Protocol::handle(const RequestHead& head, const std::string& body) const
 {
     json message;
+    if (nested_too_deep(body))
+        return error_reply(400, nullptr, PARSE_ERROR,
+                           "Parse error: the request body nests arrays or objects deeper than " + std::to_string(MAX_JSON_DEPTH) + " levels");
     try {
         message = json::parse(body);
     } catch (const std::exception&) {

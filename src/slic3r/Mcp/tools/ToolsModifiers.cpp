@@ -1,4 +1,4 @@
-// Modifier bodies and height ranges: modifier_add, modifier_update, modifier_delete, layer_range.
+// Modifier bodies and height ranges: modifier_add, modifier_update, layer_range (deletion is `delete`).
 //
 // modifier_add repeats the model steps of ObjectList::load_generic_subobject / load_modifier
 // (GUI_ObjectList.cpp) with public calls, without the GUI selection, the size dialog and the tip
@@ -39,6 +39,7 @@
 #include "../McpScene.hpp"
 #include "../McpSchema.hpp"
 #include "../McpTool.hpp"
+#include "../McpUtil.hpp"
 #include "settings/SettingsCommon.hpp"
 
 namespace Slic3r { namespace GUI { namespace Mcp {
@@ -407,6 +408,8 @@ void warn_precise_seam(ToolContext& ctx, int obj_idx, const ModelObject& object,
 
 json modifier_add(ToolContext& ctx)
 {
+    if (ctx.has("name"))
+        check_single_line(ctx.arg("name", ""), "name");
     const ObjectRef     target = Ids::object(ctx.arg("object", ""), "object");
     ModelObject&        object = *target.object;
     const int           obj_idx = target.obj_idx;
@@ -468,6 +471,8 @@ json modifier_add(ToolContext& ctx)
 
 json modifier_update(ToolContext& ctx)
 {
+    if (ctx.has("name"))
+        check_single_line(ctx.arg("name", ""), "name");
     const VolumeRef target = Ids::volume(ctx.arg("target", ""), "target");
     ModelObject&    object = *target.object;
     ModelVolume&    volume = *target.volume;
@@ -545,63 +550,6 @@ json modifier_update(ToolContext& ctx)
         volume.config.keys().size() > 1)
         ctx.note("The body keeps its setting overrides, but a " + ctx.arg("type", "") + " does not use them.");
     return changed_result(obj_idx, object, &volume);
-}
-
-// --- modifier_delete ------------------------------------------------------------------------------
-
-json modifier_delete(ToolContext& ctx)
-{
-    const std::vector<ItemRef> items = Ids::items(ctx.args()["targets"], "targets");
-    std::set<ModelVolume*>     doomed;
-    std::set<int>              objects;
-    for (size_t i = 0; i < items.size(); ++i) {
-        if (items[i].kind != IdKind::Volume)
-            fail("invalid_argument", "`targets[" + std::to_string(i) + "]` is not a volume id.",
-                 "This tool deletes parts and modifiers (v...). Objects are deleted with the object tools.");
-        doomed.insert(items[i].volume);
-        objects.insert(items[i].obj_idx);
-    }
-    for (int obj_idx : objects) {
-        const ModelObject& object = *plater().model().objects[static_cast<size_t>(obj_idx)];
-        int parts_left = 0;
-        for (const ModelVolume* volume : object.volumes)
-            if (volume->is_model_part() && doomed.count(const_cast<ModelVolume*>(volume)) == 0)
-                ++parts_left;
-        if (parts_left == 0)
-            fail("last_part", "Deleting these volumes would leave " + Ids::of(object) + " without a solid part.",
-                 "Delete the whole object instead, or keep one part.");
-        for (const ModelVolume* volume : object.volumes)
-            if (doomed.count(const_cast<ModelVolume*>(volume)) != 0 && (volume->is_cut_connector() || (object.is_cut() && !volume->is_modifier() &&
-                                                                                                       !volume->is_support_modifier())))
-                fail("invalid_argument", Ids::of(*volume) + " belongs to a cut object; deleting it would break the cut correspondence.",
-                     "Do this in the application, which asks how to handle the cut information.");
-    }
-
-    ctx.snapshot("delete " + std::to_string(doomed.size()) + " volume(s)");
-    json deleted = json::array();
-    for (int obj_idx : objects) {
-        ModelObject& object = *plater().model().objects[static_cast<size_t>(obj_idx)];
-        for (int v = static_cast<int>(object.volumes.size()) - 1; v >= 0; --v) {
-            ModelVolume* volume = object.volumes[static_cast<size_t>(v)];
-            if (doomed.count(volume) == 0)
-                continue;
-            deleted.push_back(Ids::of(*volume));
-            object.delete_volume(static_cast<size_t>(v));
-        }
-        object.invalidate_bounding_box();
-    }
-    for (int obj_idx : objects)
-        refresh_structure(obj_idx, true);
-    ctx.set_slice_invalidated();
-
-    json changed = json::array();
-    for (int obj_idx : objects)
-        changed.push_back(Scene::object_json(obj_idx, Scene::Detail::Normal));
-    json out = json::object();
-    out["ok"] = true;
-    out["deleted"] = std::move(deleted);
-    out["changed"] = std::move(changed);
-    return out;
 }
 
 // --- layer_range ----------------------------------------------------------------------------------
@@ -801,7 +749,7 @@ MCP_TOOL_GROUP(Modifiers)
             "(a slab: on the bed). place.fit object_xy sizes a cube/slab to the object's footprint plus place.margin. `filament` (0 = the "
             "object's), `settings` = per-body overrides (part and modifier only; same rules as settings_set scope volume). One undo step. "
             "Returns the object, the new volume (detail full) and `placement` with the body's box in object, plate and world frames to "
-            "verify where it went. Move/resize/retype later with modifier_update; delete with modifier_delete; height ranges are layer_range.";
+            "verify where it went. Move/resize/retype later with modifier_update; delete with `delete`; height ranges are layer_range.";
         tool.input_schema = Schema::parse(R"JSON({
             "type": "object",
             "properties": {
@@ -844,7 +792,7 @@ MCP_TOOL_GROUP(Modifiers)
             "last solid part cannot change type), `name`, `filament` (0 = the object's), and its pose: `place` (center_rel / center + frame / "
             "rotation, as in modifier_add; rotation is absolute, about the bed axes), `size` [x,y,z] mm along the body's own axes, or `scale` "
             "[x,y,z] relative to its mesh. What is not given is kept. One undo step. Returns the object, the volume and its placement boxes. "
-            "Settings of the body are settings_set with scope {\"volume\": id}.";
+            "Relative moves / rotations: object_transform with the v id; settings: settings_set scope {\"volume\": id}; delete: delete.";
         tool.input_schema = Schema::parse(R"JSON({
             "type": "object",
             "properties": {
@@ -865,24 +813,6 @@ MCP_TOOL_GROUP(Modifiers)
             "required": ["target"],
             "additionalProperties": false})JSON", "modifier_update");
         tool.handler = modifier_update;
-        registry.add(std::move(tool));
-    }
-    {
-        ToolDef tool;
-        tool.name = "modifier_delete";
-        tool.title = "Delete parts or bodies";
-        tool.description =
-            "Delete parts, negative parts, modifiers, support blockers/enforcers or seam bodies (volume ids). An object must keep at least one "
-            "solid part (last_part); delete the object instead. One undo step. Returns the deleted ids and the changed objects.";
-        tool.input_schema = Schema::parse(R"JSON({
-            "type": "object",
-            "properties": {
-                "targets": {"type": "array", "items": {"$ref": "#/$defs/Id"}, "minItems": 1, "description": "Volume ids (v...)."}
-            },
-            "required": ["targets"],
-            "additionalProperties": false})JSON", "modifier_delete");
-        tool.destructive = true;
-        tool.handler = modifier_delete;
         registry.add(std::move(tool));
     }
     {

@@ -12,6 +12,7 @@
 
 #include "../../McpError.hpp"
 #include "../../McpScene.hpp"
+#include "../../McpSettings.hpp"
 
 namespace Slic3r { namespace GUI { namespace Mcp { namespace PresetOps {
 
@@ -223,9 +224,10 @@ json dirty_values(Preset::Type type)
     if (!c.current_is_dirty())
         return out;
     const DynamicPrintConfig& config = c.get_edited_preset().config;
+    // value_json_for redacts secrets (print host, credentials).
     for (const std::string& key : c.current_dirty_options())
-        if (const ConfigOption* option = config.option(key); option != nullptr)
-            out[key] = config_value_json(*option);
+        if (config.option(key) != nullptr)
+            out[key] = Settings::value_json_for(config, key);
     return out;
 }
 

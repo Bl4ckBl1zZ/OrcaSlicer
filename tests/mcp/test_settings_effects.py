@@ -1,6 +1,6 @@
 """Effect tests: settings, modifiers, height ranges and filament assignment must change the sliced result.
 
-The project is saved to a 3MF with debug_settings_project and sliced with the application's own
+The project is saved to a 3MF with project_save (copy) and sliced with the application's own
 command-line slicer (gcode_stats.slice_3mf) in a private data directory; the slicing tools are on
 another branch. Every test compares with the unmodified cube and undoes its changes.
 """
@@ -32,7 +32,7 @@ def slicer(effects_app, ec, run_dir):
     def run(tag):
         counter["n"] += 1
         project = workspace / f"effect_{counter['n']}_{tag}.3mf"
-        ec.tool("debug_settings_project", action="save", path=str(project))
+        ec.tool("project_save", path=str(project), copy=True, overwrite=True)
         return slice_3mf(project, run_dir / "cli" / tag)
 
     return run
@@ -159,5 +159,5 @@ def test_filament_assignment_changes_tool(ec, slicer):
         g = slicer("filament")
     finally:
         undo(ec, 2)
-        ec.tool("filament_edit", action="remove", slot=slot)
+        ec.tool("filament_edit", action="remove", filament=slot)
     assert slot - 1 in g.tools and 0 in g.tools

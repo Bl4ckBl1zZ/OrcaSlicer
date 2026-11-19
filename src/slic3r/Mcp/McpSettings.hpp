@@ -26,6 +26,8 @@ class ConfigOption;
 class ConfigOptionDef;
 class DynamicPrintConfig;
 class ModelConfig;
+class ModelObject;
+class ModelVolume;
 class Preset;
 
 namespace GUI { namespace Mcp {
@@ -127,6 +129,12 @@ std::vector<std::string> modified_keys(const Scope& scope);
 // It is computed from the same inputs slicing uses, before slicing; clamping done by the slicer
 // afterwards is not applied.
 json effective_value(const Scope& scope, const std::string& key, const DynamicPrintConfig& full_config);
+
+// The option in force for a part (or, with volume == nullptr, an object) without building the full
+// configuration: volume <- object <- the plate of its first instance (per-plate keys) <- the edited
+// process, printer and project configuration. nullptr when no level has the key. Per-filament keys
+// are read from the first filament preset. Same order as effective_value.
+const ConfigOption* effective_option(const ModelObject& object, const ModelVolume* volume, const std::string& key);
 
 } // namespace Settings
 

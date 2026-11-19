@@ -51,6 +51,12 @@ json printer_json();
 json process_json();
 // [{"slot", "preset", "type", "color"}]
 json filaments_json();
+// Where filament slot `slot` (1-based) is used: {objects, parts, layer_ranges, paint}. An object counts
+// when its own filament is the slot and at least one solid part inherits it; parts and modifiers
+// when they name the slot; height ranges when they name it; paint when a part has colour paint in
+// that slot. filament_list and filament_edit (in_use) both use this.
+json filament_used_by(int slot);
+bool filament_in_use(const json& used_by);
 // Counts and names only: what mutating tools that touch everything (project load, preset switch)
 // return.
 json summary_json();

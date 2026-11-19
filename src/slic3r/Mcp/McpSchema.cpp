@@ -25,8 +25,8 @@ const json& shared_defs()
 {
     static const json defs = parse(R"JSON({
   "Id": {"type": "string", "pattern": "^(o|i|v|pl)[0-9]+$",
-         "description": "an id from scene_get: o<N> object, i<N> instance, v<N> volume (part or modifier), pl<N> plate"},
-  "PlateRef": {"description": "Plate: 1-based number as shown in the app, a pl<N> id, or \"current\".",
+         "description": "scene_get id: o<N> object, i<N> instance, v<N> part or modifier, pl<N> plate"},
+  "PlateRef": {"description": "1-based plate number, pl<N> id or \"current\"",
                "oneOf": [{"type": "integer", "minimum": 1}, {"type": "string", "pattern": "^(pl[0-9]+|current)$"}]},
   "Vec3": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
   "Vec2": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
@@ -46,7 +46,7 @@ const json& shared_defs()
       "preset": {"enum": ["iso", "iso_left", "iso_back", "iso_back_left", "top", "bottom", "front", "back", "left", "right"]},
       "azimuth_deg": {"type": "number", "description": "0 looks from the front (-Y towards +Y); increases counter-clockwise seen from above."},
       "elevation_deg": {"type": "number", "minimum": -90, "maximum": 90, "description": "0 is horizontal, 90 looks straight down."},
-      "target": {"description": "What to look at: \"plate\", \"objects\", \"toolpaths\", a point [x,y,z] in world mm, or a list of ids.",
+      "target": {"description": "What to look at: \"plate\", \"objects\", \"toolpaths\", a point [x,y,z] in plate mm, or a list of ids.",
                  "oneOf": [{"enum": ["plate", "objects", "toolpaths"]}, {"$ref": "#/$defs/Vec3"}, {"type": "array", "items": {"$ref": "#/$defs/Id"}, "minItems": 1}]},
       "distance": {"type": "number", "exclusiveMinimum": 0, "description": "Camera distance from the target in mm (perspective). Overrides zoom."},
       "zoom": {"type": "number", "exclusiveMinimum": 0, "description": "1 = fit target; 2 = twice as close."},

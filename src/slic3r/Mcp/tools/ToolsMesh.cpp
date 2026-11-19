@@ -339,7 +339,7 @@ MCP_TOOL_GROUP(Mesh)
     tool.description =
         "Measure and inspect model geometry without changing it. kind \"stats\": facets, volume, surface area, whether the mesh is closed "
         "(manifold), size and bounding box of objects or parts. \"overhangs\": the area that faces downward within threshold_deg of "
-        "straight down (the support painting gizmo's test), with the largest connected regions and their boxes - use it to judge "
+        "straight down (the support gizmo's angle test, but faces lying on the bed are left out; paint_apply's overhang selector includes them), with the largest connected regions and their boxes - use it to judge "
         "whether and where supports are needed before slicing. \"flat_faces\": the faces an object could be laid on (planes of its "
         "convex hull, largest first) with their normals, for choosing an orientation. \"raycast\": what a ray hits - give a `pixel` of a "
         "screenshot together with that screenshot's `camera`, or an `origin` and `direction` - returning the object, part, facet, "

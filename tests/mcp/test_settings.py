@@ -185,6 +185,6 @@ def test_filament_list(client):
     model = cube(client)
     filaments = client.tool("filament_list")["filaments"]
     assert filaments[0]["slot"] == 1 and filaments[0]["preset"] and filaments[0]["type"] and filaments[0]["color"].startswith("#")
-    assert filaments[0]["used_by"] == {"objects": [model["id"]], "parts": [], "paint": []}
+    assert filaments[0]["used_by"] == {"objects": [model["id"]], "parts": [], "layer_ranges": [], "paint": []}
     assert filaments == [dict(entry, used_by=entry["used_by"]) for entry in filaments]
     assert [entry["slot"] for entry in filaments] == list(range(1, len(filaments) + 1))

@@ -40,7 +40,7 @@ def the_object(c) -> dict:
 
 def clear_all(c, oid):
     for ch in CHANNELS:
-        c.tool("paint_apply", targets=[oid], channel=ch, op="clear")
+        c.tool("paint_apply", targets=[oid], channel=ch, action="clear")
 
 
 @pytest.fixture(params=["modern", "legacy"])
@@ -234,7 +234,7 @@ def test_operations(pc):
     top = {"normal": {"direction": [0, 0, 1], "max_angle_deg": 1}}
     paint(c, oid, {"all": True}, state="block")
     # erase a disc
-    r = c.tool("paint_apply", targets=[oid], channel="support", op="erase", resolution_mm=0.1,
+    r = c.tool("paint_apply", targets=[oid], channel="support", action="erase", resolution_mm=0.1,
                selector={"sphere": {"center": [cx, cy, hi[2]], "radius": 4}})
     assert close(area(r, "block"), 2400 - math.pi * 16)
     assert r["parts"][0]["delta_mm2"]["block"] == pytest.approx(-math.pi * 16, rel=0.01)
@@ -245,10 +245,10 @@ def test_operations(pc):
     r = paint(c, oid, {"same_state": {"seed": {"point": [cx + 8, cy + 8, hi[2]]}}}, state="block")
     assert area(r, "enforce") == 0 and close(area(r, "block"), 2400 - math.pi * 16)
     # replace: clear the channel, then paint
-    r = paint(c, oid, top, state="enforce", op="replace")
+    r = paint(c, oid, top, state="enforce", action="replace")
     assert close(area(r, "enforce"), 400) and area(r, "block") == 0
     # clear
-    r = c.tool("paint_apply", targets=[oid], channel="support", op="clear")
+    r = c.tool("paint_apply", targets=[oid], channel="support", action="clear")
     assert r["parts"][0]["after"] == {} and r["changed"] is True
     # dry run changes nothing
     r = paint(c, oid, top, dry_run=True)
@@ -305,7 +305,7 @@ def test_bad_states_and_arguments(pc):
         assert err.code == "invalid_argument"
     assert c.tool_error("paint_apply", targets=[oid], channel="support", selector={"all": True}).code == "invalid_argument"  # no state
     assert c.tool_error("paint_apply", targets=[oid], channel="support", state="enforce").code == "invalid_argument"  # no selector
-    assert c.tool_error("paint_apply", targets=[oid], channel="support", op="clear", selector={"all": True}).code == "invalid_argument"
+    assert c.tool_error("paint_apply", targets=[oid], channel="support", action="clear", selector={"all": True}).code == "invalid_argument"
     assert c.tool_error("paint_apply", targets=["o999999"], channel="support", state="enforce", selector={"all": True}).code == "stale_id"
     err = c.tool_error("paint_apply", targets=[oid], channel="support", state="enforce", selector={"all": True}, resolution_mm=0.01)
     assert err.code == "invalid_argument" and "resolution_mm" in err.message
@@ -366,7 +366,7 @@ def test_3mf_round_trip(pc, cube_app):
     paint(c, oid, {"sphere": {"center": [lo[0], lo[1], lo[2]], "radius": 6}}, state="enforce")
     paint(c, oid, {"z_range": {"min": lo[2] + 10, "max": lo[2] + 11}}, state="block", channel="seam")
     paint(c, oid, {"normal": {"direction": [0, 0, 1], "max_angle_deg": 1}}, state="fuzzy", channel="fuzzy_skin")
-    path = cube_app.data_dir / "paint_roundtrip.3mf"
+    path = cube_app.data_dir / "mcp" / "workspace" / "paint_roundtrip.3mf"  # a write root
     r = c.tool("debug_paint_3mf", path=str(path))
     assert r["all_equal"] is True, r
     painted = r["parts"][0]
@@ -375,8 +375,9 @@ def test_3mf_round_trip(pc, cube_app):
 
 def test_targets_must_be_model_parts(pc):
     c, oid = pc
-    fx = c.tool("debug_paint_fixture", op="add_modifier", object=oid, size=[5, 5, 5])
-    modifier = [v for v in fx["object"]["volumes"] if v["type"] != "part"][0]
+    fx = c.tool("modifier_add", object=oid, type="modifier", shape={"primitive": "cube", "size": [5, 5, 5]})
+    fx["object"] = fx["changed"]
+    modifier = fx["volume"]
     try:
         err = c.tool_error("paint_apply", targets=[modifier["id"]], channel="support", state="enforce", selector={"all": True})
         assert err.code == "not_a_part" and "modifier" in err.message
@@ -390,7 +391,7 @@ def test_targets_must_be_model_parts(pc):
 def test_frames_on_transformed_instances(pc):
     """Rotated, non-uniformly scaled and mirrored instance: paint lands where the selector says in each frame."""
     c, oid = pc
-    fx = c.tool("debug_paint_fixture", op="transform", object=oid, rotation_deg=[0, 0, 30], scale=[1.5, 1, 0.5], mirror=[-1, 1, 1])
+    fx = c.tool("object_transform", targets=[oid], set_rotation=[0, 0, 30], set_scale=[1.5, 1, 0.5], mirror="x", frame="local")
     try:
         lo, hi, part = box_of(c, oid)
         # plate frame: the instance is 10 mm tall now; a band in its middle 2 mm high
@@ -419,9 +420,12 @@ def test_frames_on_transformed_instances(pc):
 
 def test_instances_share_paint(pc):
     c, oid = pc
-    fx = c.tool("debug_paint_fixture", op="add_instance", object=oid, offset=[40, 0, 0])
+    fx = c.tool("object_duplicate", targets=[oid], copies=1)
     try:
-        insts = fx["object"]["instances"]
+        insts = [o for o in c.tool("scene_get", objects=[oid])["plates"][0]["objects"] if o["id"] == oid][0]["instances"]
+        # Second instance exactly 40 mm to the right of the first.
+        first, second = insts[0]["center"], insts[1]["center"]
+        c.tool("object_transform", targets=[insts[1]["id"]], translate=[first[0] + 40 - second[0], first[1] - second[1], 0])
         assert len(insts) == 2
         lo, hi, _ = box_of(c, insts[1]["id"])  # boxes of the second instance
         r = paint(c, insts[1]["id"], {"sphere": {"center": [lo[0], lo[1], hi[2]], "radius": 5}})

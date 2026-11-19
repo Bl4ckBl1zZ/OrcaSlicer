@@ -22,6 +22,30 @@ COLOR_BY = ["feature", "filament", "color_print", "speed", "actual_speed", "laye
             "layer_time", "layer_time_log", "fan_speed", "temperature", "pressure_advance", "acceleration", "jerk"]
 
 
+# Scene set-ups through the real tools (they used to be a debug fixture).
+def load_model(client, path) -> dict:
+    imported = client.tool("model_import", paths=[str(path)])["imported"]
+    return {"objects": [o["id"] for o in imported]}
+
+
+def plate_center(client):
+    """Centre of the printable area in plate coordinates (from the printer's printable_area)."""
+    area = client.tool("settings_get", scope="printer", keys=["printable_area"])["values"]["printable_area"]
+    pts = [tuple(float(v) for v in (p if isinstance(p, list) else p.split("x"))) for p in (area if isinstance(area, list) else area.split(","))]
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    return ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
+
+
+def move_to_plate(client, obj, plate, offset=(0, 0)):
+    """Put the object on `plate` at the bed centre + `offset` (mm); one undo step."""
+    cx, cy = plate_center(client)
+    client.tool("object_transform", targets=[obj], move_to={"plate": plate, "center": [cx + offset[0], cy + offset[1]]})
+
+
+def add_plate(client) -> int:
+    return client.tool("plate_manage", action="add")["added"][0]
+
+
 @pytest.fixture(scope="module")
 def pv_app(launch_app, out_dir):
     roots = ";".join(str(p) for p in (DATA, HANDY, out_dir))
@@ -180,11 +204,11 @@ def test_bad_options(m, sliced):
 
 def test_user_preview_not_disturbed(m, sliced, shots):
     before_window = m.tool("debug_window")
-    before_viewer = m.tool("debug_slice_fixture", action="viewer_state")
+    before_viewer = m.tool("debug_viewer_state")
     for preset in ("iso", "top"):
         shot(m, shots, f"undisturbed_{preset}", camera={"preset": preset}, preview={"layers": {"from": 2, "to": 5}, "color_by": "speed"})
     after_window = m.tool("debug_window")
-    after_viewer = m.tool("debug_slice_fixture", action="viewer_state")
+    after_viewer = m.tool("debug_viewer_state")
     assert before_window["user_camera"] == after_window["user_camera"]
     assert before_window["preview_tab"] == after_window["preview_tab"]
     assert before_viewer["layers_view_range"] == after_viewer["layers_view_range"]

@@ -384,9 +384,17 @@ json slice_warnings(int plate_idx)
     if (h.result != nullptr && h.plate->is_slice_result_valid()) {
         const GCodeProcessorResult& r = *h.result;
         for (const auto& w : r.warnings) {
+            // The processor stores some warnings as codes; the GUI shows them through
+            // Plater::get_slice_warning_string. Same text here, the code kept in `code`.
+            GCodeProcessorResult::SliceWarning copy = w;
+            const std::string text = Plater::get_slice_warning_string(copy).ToUTF8().data();
+            if (text.empty())
+                continue; // the GUI does not show it either (e.g. not_generate_timelapse)
             json e = json::object();
             e["level"] = w.level >= 2 ? "error" : (w.level == 1 ? "warning" : "tip");
-            e["message"] = w.msg;
+            e["message"] = text;
+            if (text != w.msg && w.error_code.empty())
+                e["code"] = w.msg;
             if (!w.error_code.empty())
                 e["code"] = w.error_code;
             if (!w.params.empty())

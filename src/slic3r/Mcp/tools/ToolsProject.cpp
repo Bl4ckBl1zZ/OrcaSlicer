@@ -18,11 +18,13 @@
 #include "libslic3r/Format/STL.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/Tab.hpp"
 
 #include "../McpFiles.hpp"
 #include "../McpIds.hpp"
@@ -32,6 +34,8 @@
 #include "../McpTool.hpp"
 #include "../McpUtil.hpp"
 #include "edit/EditCommon.hpp"
+#include "settings/PresetOps.hpp"
+#include "slice/SliceData.hpp"
 
 namespace fs = boost::filesystem;
 
@@ -110,6 +114,8 @@ void add_unsaved_rules(ToolContext& ctx)
 
 json project_new(ToolContext& ctx)
 {
+    if (ctx.has("name"))
+        check_single_line(ctx.arg("name", ""), "name");
     const std::string note = handle_unsaved(ctx, "starting a new project");
     add_unsaved_rules(ctx);
     // new_project(skip_confirm = true): no save question; silent: no tab switch, no zoom of the user's view.
@@ -139,17 +145,97 @@ void add_3mf_rules(ToolContext& ctx, bool trust_gcode)
     ctx.on_dialog({"", "rotation template", DialogAnswer::Yes, true});
 }
 
+bool is_gcode_question(const DialogRecord& record)
+{
+    return contains_ci(record.title, "Modified G-code") || contains_ci(record.title, "Customized Preset");
+}
+
+// The post-processing scripts of the edited process preset, serialised; "" when there are none.
+std::string edited_post_process()
+{
+    const DynamicPrintConfig&  config  = PresetOps::collection(Preset::TYPE_PRINT).get_edited_preset().config;
+    const ConfigOptionStrings* scripts = config.option<ConfigOptionStrings>("post_process");
+    if (scripts == nullptr)
+        return {};
+    for (const std::string& script : scripts->values)
+        if (!script.empty())
+            return scripts->serialize();
+    return {};
+}
+
+// Back to an empty project after a load that was refused: the loaded objects, plates and embedded
+// presets go (new_project resets the project presets), and the preset edits the load left are dropped.
+void roll_back_load()
+{
+    plater().new_project(true, true);
+    for (Preset::Type type : {Preset::TYPE_PRINT, Preset::TYPE_FILAMENT, Preset::TYPE_PRINTER})
+        if (PresetOps::collection(type).current_is_dirty())
+            PresetOps::discard_edits(type);
+    flush_pending_events();
+}
+
 json project_open(ToolContext& ctx)
 {
     const fs::path path = Files::check_read(ctx.arg("path", ""), {".3mf"}, "path");
+    // Trusting a project's G-code is a G-code edit by the agent: it needs the same permission.
+    const bool trust_gcode = ctx.arg<bool>("trust_embedded_gcode", false);
+    if (trust_gcode && !wxGetApp().app_config->get_bool("mcp_allow_gcode_edit"))
+        fail("forbidden_key", "trust_embedded_gcode: true needs the user's permission for the agent to edit G-code.",
+             "Ask the user to enable \"Allow the agent to edit G-code settings\" (mcp_allow_gcode_edit) in Preferences, MCP server section; "
+             "or open the project with trust_embedded_gcode: false.");
     const std::string note = handle_unsaved(ctx, "opening a project");
+    // Unsaved preset edits: the GUI would ask "Load project: unsaved changes" (save as new presets or
+    // discard). Decide from on_unsaved instead: fail lists them; discard / save drop them (with save the
+    // project file just written holds them).
+    json preset_edits = json::object();
+    for (Preset::Type type : {Preset::TYPE_PRINT, Preset::TYPE_FILAMENT, Preset::TYPE_PRINTER})
+        if (PresetOps::collection(type).current_is_dirty())
+            preset_edits[PresetOps::type_name(type)] = PresetOps::dirty_values(type);
+    if (!preset_edits.empty()) {
+        if (ctx.arg("on_unsaved", "fail") == "fail")
+            fail("unsaved_changes", "The presets have unsaved edits; opening a project replaces them.",
+                 "Pass on_unsaved: \"discard\", or keep the edits with preset_save first.",
+                 json::object({{"presets", preset_edits}}));
+        for (Preset::Type type : {Preset::TYPE_PRINT, Preset::TYPE_FILAMENT, Preset::TYPE_PRINTER})
+            if (PresetOps::collection(type).current_is_dirty())
+                PresetOps::discard_edits(type);
+        ctx.note("Discarded unsaved preset edits: " + preset_edits.dump() + ".");
+    }
     add_unsaved_rules(ctx);
-    add_3mf_rules(ctx, ctx.arg<bool>("trust_embedded_gcode", false));
+    add_3mf_rules(ctx, trust_gcode);
     ctx.on_dialog({"Attention", "UTF-8", DialogAnswer::Ok, true});
+
+    // The user may have ticked "don't show again" on the G-code question; the agent still has to see
+    // it, so it is switched back on for this load (and restored afterwards).
+    ScopedAppConfig app_config;
+    if (!trust_gcode)
+        app_config.set("no_warn_when_modified_gcodes", "false");
+    const std::string post_process_before = edited_post_process();
+    const size_t      dialogs_before      = ctx.dialogs().size();
 
     // "<loadall>" skips the "open as project or import geometry" question.
     plater().load_project(from_path(path), "<loadall>");
     flush_pending_events();
+
+    // Untrusted custom G-code: the application loads the presets anyway once its question is
+    // dismissed, so undo the load instead of leaving that G-code selected.
+    if (!trust_gcode) {
+        json questions = json::array();
+        for (size_t i = dialogs_before; i < ctx.dialogs().size(); ++i)
+            if (is_gcode_question(ctx.dialogs()[i]))
+                questions.push_back(to_json(ctx.dialogs()[i]));
+        if (!questions.empty()) {
+            roll_back_load();
+            ctx.accept_dialogs();
+            ctx.set_slice_invalidated();
+            fail("untrusted_gcode",
+                 "The project " + path.generic_string() +
+                     " carries presets with custom G-code; it was not opened (the load was undone, leaving an empty project).",
+                 "Check the G-code the question lists (details.questions), then repeat with trust_embedded_gcode: true; that needs the "
+                 "user's \"Allow the agent to edit G-code settings\" preference (mcp_allow_gcode_edit).",
+                 json::object({{"path", path.generic_string()}, {"questions", questions}}));
+        }
+    }
     const std::vector<std::string> errors = error_dialog_texts(ctx);
     if (!errors.empty()) {
         ctx.accept_dialogs();
@@ -171,6 +257,24 @@ json project_open(ToolContext& ctx)
             }
     if (reassigned > 0)
         Refresh::full();
+    // Post-processing scripts are programs that run on export; a project opened by the agent must not
+    // bring its own (trusted G-code or not). Scripts the user's process preset already had stay.
+    const std::string post_process_after = edited_post_process();
+    if (!post_process_after.empty() && post_process_after != post_process_before) {
+        try {
+            PresetOps::tab(Preset::TYPE_PRINT).apply_preset_config_values({{std::string("post_process"), std::string()}});
+        } catch (const std::exception& e) {
+            roll_back_load();
+            ctx.accept_dialogs();
+            ctx.set_slice_invalidated();
+            fail("internal",
+                 "The project " + path.generic_string() + " sets post-processing scripts that could not be removed (" + e.what() +
+                     "); it was not opened (the load was undone, leaving an empty project).",
+                 "Report it; the application log has the details.");
+        }
+        ctx.note("The project's process preset set post-processing scripts (post_process); they were removed, since a project opened "
+                 "through MCP never brings scripts that run on export. The removal shows as an unsaved edit of the process preset.");
+    }
     if (!note.empty())
         ctx.note(note);
     ctx.set_slice_invalidated();
@@ -417,6 +521,12 @@ json export_file(ToolContext& ctx)
         files.push_back(json::object({{"path", p.generic_string()}, {"bytes", file_bytes(p)}}));
     };
 
+    if (kind == "gcode" || kind == "gcode_3mf") {
+        // The slice group's writer: checks the slice, copies the plate's G-code or writes .gcode.3mf.
+        json out = Slice::export_gcode(ctx);
+        out["files"] = json::array({json::object({{"path", out["path"]}, {"bytes", out["bytes"]}})});
+        return out;
+    }
     if (kind == "stl" || kind == "obj") {
         const std::string ext = "." + kind;
         const std::vector<int> idxs = export_objects(ctx);
@@ -455,48 +565,6 @@ json export_file(ToolContext& ctx)
         if (!plater().export_3mf_copy(target))
             fail("export_failed", "Writing " + target.generic_string() + " failed.", "Check that the folder exists and the file is not open elsewhere.");
         record(target);
-    } else if (kind == "gcode" || kind == "gcode_3mf") {
-        const bool all = ctx.has("plate") && ctx.args()["plate"].is_string() && ctx.args()["plate"].get<std::string>() == "all";
-        if (all && kind == "gcode")
-            fail("invalid_argument", "`plate: \"all\"` is only for kind \"gcode_3mf\"; a .gcode file holds one plate.", "Export each plate separately.");
-        const int plate_idx = all ? -1 : Ids::plate(ctx.has("plate") ? ctx.args()["plate"] : json(), "plate");
-        PartPlateList& list = plates();
-        std::vector<int> check;
-        if (all) {
-            for (int p = 0; p < list.get_plate_count(); ++p)
-                if (!list.get_plate(p)->empty())
-                    check.push_back(p);
-        } else
-            check.push_back(plate_idx);
-        for (int p : check) {
-            PartPlate* plate = list.get_plate(p);
-            if (!plate->is_slice_result_valid() || !plate->is_slice_result_ready_for_print())
-                fail("not_sliced", "Plate " + std::to_string(p + 1) + " has no valid slice result to export.",
-                     "Slice the plate first (slice), then export.", json::object({{"plate", p + 1}}));
-        }
-        if (plater().is_background_process_slicing())
-            fail("busy_slicing", "Slicing is running; the result is not final yet.", "Wait for the slice to finish (slice_status), then export.");
-        if (kind == "gcode") {
-            const fs::path target = Files::check_write(path_arg, {".gcode"}, overwrite, "path");
-            const std::string source = list.get_plate(plate_idx)->get_tmp_gcode_path();
-            boost::system::error_code ec;
-            if (source.empty() || !fs::exists(source, ec))
-                fail("not_sliced", "The G-code of plate " + std::to_string(plate_idx + 1) + " is not available.", "Slice the plate again, then export.");
-            fs::copy_file(source, target, fs::copy_options::overwrite_existing, ec);
-            if (ec)
-                fail("export_failed", "Copying the G-code to " + target.generic_string() + " failed: " + ec.message(), "Check the folder.");
-            record(target);
-        } else {
-            if (!boost::iends_with(path_arg, ".gcode.3mf"))
-                fail("invalid_argument", "`path` must end in .gcode.3mf for kind \"gcode_3mf\".", "Name the file like plate1.gcode.3mf.");
-            const fs::path target = Files::check_write(path_arg, {".3mf"}, overwrite, "path");
-            SaveStrategy strategy = SaveStrategy::Silence | SaveStrategy::SplitModel | SaveStrategy::WithGcode | SaveStrategy::SkipModel;
-            if (wxGetApp().app_config->get_bool("export_statistics"))
-                strategy = strategy | SaveStrategy::WithStatistics;
-            if (plater().export_3mf(target, strategy, all ? PLATE_ALL_IDX : plate_idx) < 0)
-                fail("export_failed", "Writing " + target.generic_string() + " failed.", "Check the folder; a post-processing script may have failed.");
-            record(target);
-        }
     } else
         fail("invalid_argument", "Unknown `kind` \"" + kind + "\".", "Use stl, obj, 3mf, gcode or gcode_3mf.");
 
@@ -544,8 +612,10 @@ MCP_TOOL_GROUP(Project)
         tool.title = "Open a 3MF project";
         tool.description =
             "Open a 3MF project, replacing the current one: objects, plates, per-plate settings and the presets stored in the project. "
-            "`on_unsaved` as in project_new. Custom G-code embedded in the project's presets is accepted only with "
-            "trust_embedded_gcode: true (otherwise the call fails with dialog_blocked quoting the G-code question). Version notices are "
+            "`on_unsaved` as in project_new; it also covers unsaved preset edits (fail lists them, discard/save drop them). Custom G-code embedded in the project's presets is accepted only with "
+            "trust_embedded_gcode: true, which needs the user's \"Allow the agent to edit G-code settings\" preference (else forbidden_key); "
+            "without it such a project fails with untrusted_gcode quoting the G-code question, and the load is undone (an empty project "
+            "remains). Post-processing scripts (post_process) a project brings are always removed (a note says so). Version notices are "
             "returned in `dialogs`. To add only the geometry of a 3MF to the current project use model_import. Ids are new after this. "
             "Not undoable. Returns the scene summary.";
         tool.input_schema = Schema::parse(R"JSON({
@@ -626,11 +696,13 @@ MCP_TOOL_GROUP(Project)
         tool.name = "export_file";
         tool.title = "Export STL, OBJ, 3MF or G-code";
         tool.description =
-            "Write files: kind \"stl\" / \"obj\" = meshes of objects as placed on the plates (all instances; `objects` to choose, "
-            "merge: false for one file per object named <stem>_<object>.<ext>), \"3mf\" = a copy of the project (project_save copy), "
-            "\"gcode\" = the sliced G-code of one plate, \"gcode_3mf\" = sliced plate(s) as .gcode.3mf (plate \"all\" for every "
-            "sliced plate). G-code needs a valid slice (not_sliced otherwise); the user's post-processing scripts are not run for "
-            "\"gcode\". Paths must be inside a write root; existing files need overwrite: true. Returns {files: [{path, bytes}]}.";
+            "The one tool that writes files other than the project: kind \"stl\" / \"obj\" = meshes of objects as placed (all "
+            "instances; `objects` to choose, merge: false for one file per object named <stem>_<object>.<ext>), \"3mf\" = a copy of the "
+            "project (as project_save copy), \"gcode\" = the sliced G-code of one plate (as sliced: post-processing scripts are not run), "
+            "\"gcode_3mf\" = sliced plate(s) as .gcode.3mf (`plate` \"all\" for every sliced plate). G-code kinds need a valid slice "
+            "(not_sliced, busy_slicing) and also return `header` (the G-code's statistics comments) and `summary`. Paths must be inside a "
+            "write root (app_status); an existing file needs overwrite: true. Returns {path, bytes, files: [{path, bytes}]}. Nothing is "
+            "ever sent to a printer.";
         tool.input_schema = Schema::parse(R"JSON({
             "type": "object",
             "properties": {

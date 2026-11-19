@@ -61,7 +61,7 @@ def test_scenario(c, e2e_app, out_dir, run_dir):
     c.tool("layer_range", action="add", object=oid, z_min=0, z_max=4, values={"layer_height": 0.12})
 
     # 6. Two filament colours; a top cap part on the second filament.
-    c.tool("filament_edit", action="set_color", slot=1, color="#FFFFFF")
+    c.tool("filament_edit", action="set_color", filament=1, color="#FFFFFF")
     second = c.tool("filament_edit", action="add", color="#D02020")["added"]["slot"]
     cap = c.tool("modifier_add", object=oid, type="part", shape={"primitive": "cube", "size": [12, 12, 3]},
                  place={"center": [cx, cy, 21.5], "frame": "plate"}, name="red cap", filament=second)
@@ -74,7 +74,7 @@ def test_scenario(c, e2e_app, out_dir, run_dir):
     workspace = e2e_app.data_dir / "mcp" / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     project = workspace / "e2e.3mf"
-    c.tool("debug_settings_project", action="save", path=str(project))
+    c.tool("project_save", path=str(project), copy=True, overwrite=True)
     g = slice_3mf(project, run_dir / "cli" / "e2e")
     assert 0 in g.tools and second - 1 in g.tools, "the cap prints with the second filament"
     assert any(abs(layer.height - 0.12) < 1e-6 for layer in g.layers if layer.z <= 4)
@@ -84,7 +84,7 @@ def test_scenario(c, e2e_app, out_dir, run_dir):
     before = the_object(c)
 
     # 8. Load it back: a new project, new ids, same content.
-    c.tool("debug_settings_project", action="load", path=str(project))
+    c.tool("project_open", path=str(project), on_unsaved="discard")
     after = the_object(c)
     assert after["overrides"] == before["overrides"] == {"sparse_infill_density": "30%", "wall_loops": 4, "enable_support": True}
     def by_name(o):

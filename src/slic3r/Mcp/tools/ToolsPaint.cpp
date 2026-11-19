@@ -28,6 +28,7 @@
 
 #include "../McpIds.hpp"
 #include "../McpSchema.hpp"
+#include "../McpSettings.hpp"
 #include "../McpTool.hpp"
 #include "paint/LayerEvents.hpp"
 #include "paint/PaintDebug.hpp"
@@ -160,11 +161,7 @@ void after_commit(const std::set<int>& objects, FacetPaint::Channel channel)
 // The value of a setting for a part as slicing will see it: part, then object, then the process.
 const ConfigOption* effective_option(const PaintTarget& t, const char* key)
 {
-    if (t.volume->config.has(key))
-        return t.volume->config.get().option(key);
-    if (t.object->config.has(key))
-        return t.object->config.get().option(key);
-    return wxGetApp().preset_bundle->prints.get_edited_preset().config.option(key);
+    return Settings::effective_option(*t.object, t.volume, key);
 }
 
 // Tell the agent when the settings make the new paint ineffective, as a user would see in the GUI.
@@ -197,28 +194,28 @@ json paint_apply(ToolContext& ctx)
     FacetPaint::Channel channel;
     if (!parse_channel(args["channel"].get<std::string>(), channel))
         fail("invalid_argument", "`channel` must be support, seam, color or fuzzy_skin.");
-    const std::string op = ctx.arg("op", "set");
+    const std::string op = ctx.arg("action", "set");
     const int         filaments = Ids::filament_count();
 
     // --- validate --------------------------------------------------------------------------
     EnforcerBlockerType state = EnforcerBlockerType::NONE;
     if (op == "set" || op == "replace") {
         if (!ctx.has("state"))
-            fail("invalid_argument", "`state` is required for op \"" + op + "\".",
+            fail("invalid_argument", "`state` is required for action \"" + op + "\".",
                  channel == FacetPaint::Channel::Color ? "color: {\"filament\": n} or \"none\"." :
                  channel == FacetPaint::Channel::FuzzySkin ? "fuzzy_skin: \"fuzzy\" or \"none\"." : "support / seam: \"enforce\", \"block\" or \"none\".");
         state = parse_state(channel, args["state"], "state", filaments);
     } else if (ctx.has("state")) {
         if (parse_state(channel, args["state"], "state", std::max(filaments, int(EnforcerBlockerType::ExtruderMax))) != EnforcerBlockerType::NONE)
-            fail("invalid_argument", "op \"" + op + "\" removes paint; drop `state` or give \"none\".",
-                 op == "erase" ? "To paint a state use op \"set\"." : "To clear and repaint use op \"replace\".");
+            fail("invalid_argument", "action \"" + op + "\" removes paint; drop `state` or give \"none\".",
+                 op == "erase" ? "To paint a state use action \"set\"." : "To clear and repaint use action \"replace\".");
     }
     if (op == "clear") {
         if (ctx.has("selector"))
-            fail("invalid_argument", "op \"clear\" removes all paint of the channel and takes no `selector`.",
-                 "To remove paint only inside a region use op \"erase\" with a selector.");
+            fail("invalid_argument", "action \"clear\" removes all paint of the channel and takes no `selector`.",
+                 "To remove paint only inside a region use action \"erase\" with a selector.");
     } else if (!ctx.has("selector"))
-        fail("invalid_argument", "`selector` is required for op \"" + op + "\".", "{\"all\": true} selects the whole surface.");
+        fail("invalid_argument", "`selector` is required for action \"" + op + "\".", "{\"all\": true} selects the whole surface.");
 
     std::optional<EnforcerBlockerType> only_where;
     if (ctx.has("only_where"))
@@ -360,7 +357,7 @@ json paint_apply(ToolContext& ctx)
         out["would_change"] = any_changed;
     }
     out["channel"] = channel_name(channel);
-    out["op"] = op;
+    out["action"] = op;
     if (op == "set" || op == "replace")
         out["state"] = state_name(channel, state);
     out["mode"] = mode;
@@ -463,11 +460,11 @@ MCP_TOOL_GROUP(Paint)
                 "targets": {"type": "array", "items": {"$ref": "#/$defs/Id"}, "minItems": 1,
                             "description": "Objects (all their model parts), instances (same, with that instance as the plate/world frame) or parts (v...). Modifiers and other bodies cannot be painted."},
                 "channel": {"enum": ["support", "seam", "color", "fuzzy_skin"]},
-                "state": {"description": "support, seam: \"enforce\" | \"block\" | \"none\". color: {\"filament\": n} (1-based slot) | \"none\" (the part's own filament). fuzzy_skin: \"fuzzy\" | \"none\". Required for op set / replace.",
+                "state": {"description": "support, seam: \"enforce\" | \"block\" | \"none\". color: {\"filament\": n} (1-based slot) | \"none\" (the part's own filament). fuzzy_skin: \"fuzzy\" | \"none\". Required for action set / replace.",
                           "oneOf": [{"enum": ["enforce", "block", "fuzzy", "none"]},
                                     {"type": "object", "properties": {"filament": {"type": "integer", "minimum": 1}}, "required": ["filament"], "additionalProperties": false}]},
                 "selector": {"$ref": "#/$defs/Selector"},
-                "op": {"enum": ["set", "erase", "replace", "clear"], "default": "set",
+                "action": {"enum": ["set", "erase", "replace", "clear"], "default": "set",
                        "description": "set: paint `state` inside the selection. erase: remove paint inside it. replace: clear the channel on the targets, then paint. clear: remove all paint of the channel (no selector)."},
                 "only_where": {"description": "Only repaint surface currently in this state (e.g. recolour what is filament 2, or turn blockers into enforcers).",
                                "oneOf": [{"enum": ["enforce", "block", "fuzzy", "none"]},
@@ -491,16 +488,11 @@ MCP_TOOL_GROUP(Paint)
             "Paint model surfaces like the paint gizmos, but by rule instead of a brush: support enforcers/blockers, seam enforcers/blockers, "
             "multi-material colour (filament slot) and fuzzy skin. One undo step; the object list, 3D view and plate are refreshed and the plate "
             "must be re-sliced. Region boundaries are sharp: triangles crossing them are subdivided to resolution_mm.\n"
-            "Selector grammar (exactly one key per object): {\"all\":true}; {\"facets\":[ids]}; {\"normal\":{\"direction\":[0,0,1],\"max_angle_deg\":10}}; "
-            "{\"overhang\":{\"threshold_deg\":45}} (normal within 45 deg of straight down, as support_threshold_angle); {\"z_range\":{\"min\":2,\"max\":5}}; "
-            "{\"slab\":{\"normal\":[1,1,0],\"min\":0,\"max\":3}}; {\"halfspace\":{\"point\":[x,y,z],\"normal\":[0,0,-1]}}; {\"box\":{\"min\":[..],\"max\":[..]}} or "
-            "{\"box\":{\"center\":[..],\"size\":[..],\"rotation_deg\":[0,0,30]}}; {\"sphere\":{\"center\":[..],\"radius\":4}}; "
-            "{\"cylinder\":{\"base\":[..],\"axis\":[0,0,1],\"radius\":3,\"height\":10}}; {\"capsule\":{\"a\":[..],\"b\":[..],\"radius\":2}}; "
-            "{\"stroke\":{\"path\":[[x,y,z],...],\"radius\":1.5}}; {\"connected\":{\"seed\":SEED,\"angle_deg\":30}} (smart fill); "
-            "{\"same_state\":{\"seed\":SEED}} (bucket fill); {\"and\":[...]}, {\"or\":[...]}, {\"not\":{...}}. Positions take \"frame\": "
-            "\"plate\" (default; mm from the plate origin as scene_get reports), \"world\" or \"object\" (the object's own coordinates; paint_get gives "
-            "box_object). SEED: {\"point\":[x,y,z]} (snapped to the surface), {\"ray\":{\"origin\":..,\"direction\":..}}, {\"facet\":n,\"part\":\"v..\"} "
-            "or {\"pixel\":[u,v],\"camera\":<camera object returned by screenshot>} - look at a picture, point at a pixel, fill that surface.\n"
+            "Selector (schema $defs/Selector; exactly one key per object): all, facets, normal, overhang, z_range, slab, halfspace, box, "
+            "sphere, cylinder, capsule, stroke, connected (smart fill from a seed), same_state (bucket fill), combined with and / or / not. "
+            "Positions take \"frame\": \"plate\" (default, as scene_get), \"world\" or \"object\" (paint_get gives box_object). A seed is "
+            "{\"point\"} (snapped to the surface), {\"ray\"}, {\"facet\", \"part\"} or {\"pixel\": [u,v], \"camera\": <camera of a screenshot result>}: "
+            "look at a picture, point at a pixel, fill that surface.\n"
             "Example, supports only under an arm: {\"targets\":[\"o3\"],\"channel\":\"support\",\"state\":\"enforce\",\"selector\":{\"and\":[{\"box\":{\"min\":[-30,-15,20],"
             "\"max\":[-5,15,26],\"frame\":\"object\"}},{\"overhang\":{\"threshold_deg\":45}}]}}. Logo in white: channel color, state {\"filament\":2}, "
             "selector {\"connected\":{\"seed\":{\"pixel\":[520,300],\"camera\":{...}},\"angle_deg\":20}}.\n"

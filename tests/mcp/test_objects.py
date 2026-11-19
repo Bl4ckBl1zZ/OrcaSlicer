@@ -383,7 +383,7 @@ def test_simplify_and_undo(ec):
     sphere = ec.tool("object_add_primitive", shape="sphere", size=[30])["created"][0]
     facets = sphere["volumes"][0]["facets"]
     before = normalized(scene(ec))
-    result = wait_job(ec, ec.tool("mesh_edit", op="simplify", targets=[sphere["id"]], target_ratio=0.25))
+    result = wait_job(ec, ec.tool("mesh_edit", action="simplify", targets=[sphere["id"]], target_ratio=0.25))
     assert result["status"] == "finished", result
     vol = result["result"]["volumes"][0]
     assert vol["modified"] is True and vol["facets"] <= facets * 0.3 and vol["facets_before"] == facets
@@ -395,7 +395,7 @@ def test_simplify_and_undo(ec):
 
 def test_repair(ec):
     imported = ec.tool("model_import", paths=[str(DATA / "cube_with_hole.obj")])["imported"][0]
-    result = wait_job(ec, ec.tool("mesh_edit", op="repair", targets=[imported["id"]]))
+    result = wait_job(ec, ec.tool("mesh_edit", action="repair", targets=[imported["id"]]))
     assert result["status"] == "finished", result
     vol = result["result"]["volumes"][0]
     assert "repair" in vol
@@ -407,7 +407,7 @@ def test_mesh_job_cancel(emodern):
     fresh(emodern)
     bunny = emodern.tool("object_add_primitive", shape="handy_model", model="stanford_bunny")["created"][0]
     before = normalized(scene(emodern))
-    started = emodern.tool("mesh_edit", op="simplify", targets=[bunny["id"]], target_facets=200, wait_s=0)
+    started = emodern.tool("mesh_edit", action="simplify", targets=[bunny["id"]], target_facets=200, wait_s=0)
     if started.get("status") == "running":
         cancelled = emodern.tool("job_cancel", job=started["job"])
         final = wait_job(emodern, cancelled if cancelled.get("status") == "running" else {"status": "running", "job": started["job"]})
@@ -421,16 +421,16 @@ def test_mesh_job_cancel(emodern):
 
 def test_convert_units_and_scale_to_fit(ec):
     cube = add_cube(ec, size=(2, 2, 2))
-    inch = ec.tool("mesh_edit", op="convert_units", targets=[cube["id"]], **{"from": "inch"})
+    inch = ec.tool("mesh_edit", action="convert_units", targets=[cube["id"]], **{"from": "inch"})
     assert close(inch["changed"][0]["size"], [50.8, 50.8, 50.8], 1e-2)
-    back = ec.tool("mesh_edit", op="convert_units", targets=[cube["id"]], **{"from": "to_inch"})
+    back = ec.tool("mesh_edit", action="convert_units", targets=[cube["id"]], **{"from": "to_inch"})
     assert close(back["changed"][0]["size"], [2, 2, 2], 1e-3)
     bed = scene(ec)["printer"]["bed"]
-    fit = ec.tool("mesh_edit", op="scale_to_fit", targets=[cube["id"]], margin=10)
+    fit = ec.tool("mesh_edit", action="scale_to_fit", targets=[cube["id"]], margin=10)
     size = fit["changed"][0]["size"]
     assert close(size[0], min(bed) - 20, 0.05) or close(size[2], scene(ec)["printer"]["height"], 0.05)
-    assert ec.tool_error("mesh_edit", op="simplify", targets=[cube["id"]], target_ratio=0).code == "invalid_argument"
-    assert ec.tool_error("mesh_edit", op="convert_units", targets=[instance_of(cube)["id"]], **{"from": "inch"}).code == "invalid_argument"
+    assert ec.tool_error("mesh_edit", action="simplify", targets=[cube["id"]], target_ratio=0).code == "invalid_argument"
+    assert ec.tool_error("mesh_edit", action="convert_units", targets=[instance_of(cube)["id"]], **{"from": "inch"}).code == "invalid_argument"
 
 
 def test_lay_flat_face_from_mesh_query(ec):

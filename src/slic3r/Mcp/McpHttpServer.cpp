@@ -610,6 +610,19 @@ bool HttpServer::start(std::string& error)
 #ifndef _WIN32
     // Rebind right after a restart. Not on Windows, where this option lets two processes share a port.
     impl.acceptor.set_option(net::socket_base::reuse_address(true), ec);
+#else
+    // No other process may bind the same address and port, not even one that sets SO_REUSEADDR
+    // (which on Windows would let it take over or share the port and read the requests).
+    {
+        int exclusive = 1;
+        if (::setsockopt(impl.acceptor.native_handle(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&exclusive),
+                         static_cast<int>(sizeof(exclusive))) != 0) {
+            error = "cannot claim the port exclusively (SO_EXCLUSIVEADDRUSE, error " + std::to_string(::WSAGetLastError()) + ")";
+            beast::error_code ignored;
+            impl.acceptor.close(ignored);
+            return false;
+        }
+    }
 #endif
     impl.acceptor.bind(endpoint, ec);
     if (ec) {

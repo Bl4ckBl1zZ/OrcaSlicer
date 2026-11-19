@@ -25,6 +25,7 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "slic3r/GUI/Selection.hpp"
 
+#include "../../McpFiles.hpp"
 #include "../../McpIds.hpp"
 #include "../../McpRefresh.hpp"
 #include "../../McpScene.hpp"
@@ -122,10 +123,13 @@ json debug_paint_gizmo(ToolContext& ctx)
 
 json debug_paint_3mf(ToolContext& ctx)
 {
-    const std::string path = ctx.args()["path"].get<std::string>();
-    Plater*           plater = wxGetApp().plater();
-    if (!plater->export_3mf_copy(boost::filesystem::path(path)))
-        fail("invalid_argument", "export_3mf_copy failed for " + path);
+    // Same folder rules as export_file: a write root (the workspace by default); replaces the file.
+    const boost::filesystem::path target = Files::check_write(ctx.args()["path"].get<std::string>(), {".3mf"}, true, "path");
+    const std::string             path = target.string();
+    Plater*                       plater = wxGetApp().plater();
+    if (!plater->export_3mf_copy(target))
+        fail("invalid_argument", "export_3mf_copy failed for " + target.generic_string());
+    Files::check_read(path, {".3mf"}, "path");
 
     DynamicPrintConfig        config;
     ConfigSubstitutionContext substitutions(ForwardCompatibilitySubstitutionRule::Enable);
@@ -175,7 +179,7 @@ json debug_paint_3mf(ToolContext& ctx)
         all_equal = all_equal && equal;
     }
     json out = json::object();
-    out["path"] = path;
+    out["path"] = target.generic_string();
     out["objects"] = loaded.objects.size();
     out["parts"] = std::move(parts);
     out["layer_events"] = std::move(gcodes);
@@ -183,128 +187,6 @@ json debug_paint_3mf(ToolContext& ctx)
     return out;
 }
 
-
-// Scene set-ups the paint tests need from tools of other groups that are not on this branch.
-json debug_paint_fixture(ToolContext& ctx)
-{
-    const json&       args = ctx.args();
-    const std::string op = args["op"].get<std::string>();
-    Plater*           plater = wxGetApp().plater();
-    json              out = json::object();
-    auto vec = [&](const char* key, const Vec3d& fallback) {
-        if (!args.contains(key))
-            return fallback;
-        const json& v = args[key];
-        return Vec3d(v[0].get<double>(), v[1].get<double>(), v[2].get<double>());
-    };
-    if (op == "add_filament") {
-        const int count = args.value("count", 1);
-        for (int i = 0; i < count; ++i)
-            plater->sidebar().add_filament();
-        out["filaments"] = Ids::filament_count();
-        return out;
-    }
-    if (op == "filament_color") {
-        // As the sidebar's colour picker stores it: the project's filament_colour (test only, no journal).
-        const int slot = args.value("count", 1);
-        auto* colors = wxGetApp().preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
-        if (colors == nullptr || slot < 1 || slot > static_cast<int>(colors->values.size()))
-            fail("invalid_argument", "no such filament slot");
-        colors->values[static_cast<size_t>(slot - 1)] = args.value("color", std::string("#FFFFFF"));
-        plater->update_filament_colors_in_full_config();
-        plater->get_view3D_canvas3D()->set_as_dirty();
-        out["colors"] = colors->values;
-        return out;
-    }
-    const ObjectRef ref = Ids::object(args["object"].get<std::string>(), "object");
-    if (op == "transform") {
-        ctx.snapshot("test transform " + Ids::of(*ref.object));
-        ModelInstance* inst = ref.object->instances.front();
-        inst->set_rotation(vec("rotation_deg", Vec3d::Zero()) * (M_PI / 180.));
-        inst->set_scaling_factor(vec("scale", Vec3d::Ones()));
-        inst->set_mirror(vec("mirror", Vec3d::Ones()));
-        ref.object->invalidate_bounding_box();
-        Refresh::object(ref.obj_idx);
-    } else if (op == "add_instance") {
-        ctx.snapshot("test add instance " + Ids::of(*ref.object));
-        ModelInstance* inst = ref.object->add_instance(*ref.object->instances.front());
-        inst->set_offset(inst->get_offset() + vec("offset", Vec3d(40., 0., 0.)));
-        Refresh::structure();
-    } else if (op == "add_modifier") {
-        ctx.snapshot("test add modifier " + Ids::of(*ref.object));
-        const Vec3d size = vec("size", Vec3d(5., 5., 5.));
-        ModelVolume* v = ref.object->add_volume(make_cube(size.x(), size.y(), size.z()), ModelVolumeType::PARAMETER_MODIFIER);
-        v->name = "test modifier";
-        Refresh::full();
-    } else if (op == "add_part") {
-        ctx.snapshot("test add part " + Ids::of(*ref.object));
-        const Vec3d size = vec("size", Vec3d(10., 10., 10.));
-        ModelVolume* v = ref.object->add_volume(make_cube(size.x(), size.y(), size.z()), ModelVolumeType::MODEL_PART);
-        v->set_offset(vec("offset", Vec3d(0., 0., 0.)));
-        v->name = "test part";
-        Refresh::full();
-    } else
-        fail("invalid_argument", "unknown op");
-    out["object"] = Scene::object_json(ref.obj_idx, Scene::Detail::Full);
-    return out;
-}
-
-// Slices a copy of the app's model with the app's configuration, synchronously and outside the
-// app's background process, and writes the G-code: an oracle for "the paint takes effect".
-json debug_paint_slice(ToolContext& ctx)
-{
-    const json&    args = ctx.args();
-    Plater*        plater = wxGetApp().plater();
-    PartPlateList& plates = plater->get_partplate_list();
-    const int      plate_idx = Ids::plate(args.contains("plate") ? args["plate"] : json(nullptr));
-    PartPlate*     plate = plates.get_plate(plate_idx);
-    const std::string path = args["path"].get<std::string>();
-
-    Model model(plater->model());
-    // Only the instances on that plate.
-    for (int o = static_cast<int>(model.objects.size()) - 1; o >= 0; --o) {
-        ModelObject* object = model.objects[static_cast<size_t>(o)];
-        for (int i = static_cast<int>(object->instances.size()) - 1; i >= 0; --i)
-            if (Ids::plate_of_instance(o, i) != plate_idx)
-                object->delete_instance(static_cast<size_t>(i));
-        if (object->instances.empty())
-            model.delete_object(static_cast<size_t>(o));
-    }
-    model.curr_plate_index = plate_idx;
-
-    DynamicPrintConfig config = wxGetApp().preset_bundle->full_config();
-    config.apply(*plate->config());
-    if (args.contains("overrides"))
-        for (auto it = args["overrides"].begin(); it != args["overrides"].end(); ++it) {
-            ConfigSubstitutionContext sub(ForwardCompatibilitySubstitutionRule::Enable);
-            config.set_deserialize(it.key(), it.value().is_string() ? it.value().get<std::string>() : it.value().dump(), sub);
-        }
-    const int filaments = Ids::filament_count();
-    std::vector<int>& maps = config.option<ConfigOptionInts>("filament_map", true)->values;
-    maps.assign(static_cast<size_t>(filaments), 1);
-
-    Print print;
-    print.set_plate_origin(plate->get_origin());
-    json out = json::object();
-    try {
-        print.apply(model, config);
-        std::vector<StringObjectException> warnings;
-        const StringObjectException err = print.validate(&warnings, nullptr, nullptr);
-        if (!err.string.empty())
-            fail("invalid_argument", "validate: " + err.string);
-        print.process();
-        GCodeProcessorResult result;
-        print.export_gcode(path, &result, nullptr);
-        out["path"] = path;
-        out["layers"] = print.objects().empty() ? 0 : print.objects().front()->layers().size();
-        out["support_layers"] = print.objects().empty() ? 0 : print.objects().front()->support_layers().size();
-    } catch (const ToolError&) {
-        throw;
-    } catch (const std::exception& e) {
-        fail("invalid_argument", std::string("slicing failed: ") + e.what());
-    }
-    return out;
-}
 
 } // namespace
 
@@ -345,47 +227,6 @@ void register_debug_tools(ToolRegistry& registry)
         tool.debug_only = true;
         tool.read_only = true;
         tool.handler = debug_paint_3mf;
-        registry.add(std::move(tool));
-    }
-    {
-        ToolDef tool;
-        tool.name = "debug_paint_fixture";
-        tool.title = "Paint test fixtures (test)";
-        tool.description = "Test only. op add_filament (count), filament_color (count = slot, color), transform (object, rotation_deg, scale, mirror [+-1,..] of instance 0), "
-                           "add_instance (object, offset), add_modifier (object, size), add_part (object, size, offset).";
-        tool.input_schema = Schema::parse(R"JSON({
-            "type": "object",
-            "properties": {
-                "op": {"enum": ["add_filament", "filament_color", "transform", "add_instance", "add_modifier", "add_part"]},
-                "color": {"$ref": "#/$defs/Color"},
-                "object": {"$ref": "#/$defs/Id"},
-                "count": {"type": "integer", "minimum": 1, "maximum": 8},
-                "rotation_deg": {"$ref": "#/$defs/Vec3"}, "scale": {"$ref": "#/$defs/Vec3"}, "mirror": {"$ref": "#/$defs/Vec3"},
-                "offset": {"$ref": "#/$defs/Vec3"}, "size": {"$ref": "#/$defs/Vec3"}
-            },
-            "required": ["op"],
-            "additionalProperties": false})JSON", "debug_paint_fixture");
-        tool.debug_only = true;
-        tool.accepts_if_rev = false;
-        tool.handler = debug_paint_fixture;
-        registry.add(std::move(tool));
-    }
-    {
-        ToolDef tool;
-        tool.name = "debug_paint_slice";
-        tool.title = "Headless slice for paint effect tests (test)";
-        tool.description = "Test only. Slices a copy of the plate's objects with the app's configuration (plus `overrides`) synchronously and writes "
-                           "the G-code to `path`.";
-        tool.input_schema = Schema::parse(R"JSON({
-            "type": "object",
-            "properties": {"path": {"type": "string", "minLength": 1}, "plate": {"$ref": "#/$defs/PlateRef"},
-                           "overrides": {"type": "object", "additionalProperties": true}},
-            "required": ["path"],
-            "additionalProperties": false})JSON", "debug_paint_slice");
-        tool.debug_only = true;
-        tool.read_only = true;
-        tool.run_timeout_ms = 280000;
-        tool.handler = debug_paint_slice;
         registry.add(std::move(tool));
     }
 }

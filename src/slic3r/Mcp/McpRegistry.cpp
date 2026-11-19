@@ -44,7 +44,7 @@ void ToolRegistry::add(ToolDef def)
         def.input_schema["properties"] = json::object();
     if (!def.read_only && def.accepts_if_rev && !def.input_schema["properties"].contains("if_rev"))
         def.input_schema["properties"]["if_rev"] = json::object(
-            {{"type", "integer"}, {"description", "Fail with `conflict` unless the scene revision (rev from scene_get or the last result) still has this value."}});
+            {{"type", "integer"}, {"description", "Fail with conflict if the scene rev changed."}});
     def.input_schema = Schema::with_shared_defs(std::move(def.input_schema));
     if (const std::string problem = Schema::check_schema(def.input_schema); !problem.empty())
         throw std::logic_error("MCP tool \"" + def.name + "\": bad input_schema: " + problem);
