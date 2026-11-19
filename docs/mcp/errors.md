@@ -35,6 +35,22 @@ Add a code to this page when a tool introduces one. Prefer an existing code.
 | `not_found` | The file does not exist. | Check the path. |
 | `exists` | The file to write already exists. | Pass `overwrite: true` or choose another name. |
 
+## Settings
+
+| Code | Meaning | What the agent should do |
+|---|---|---|
+| `unknown_key` | There is no such setting. `details.nearest` lists similar keys. | Use `settings_search`. |
+| `key_not_in_scope` | The setting cannot live at that scope. `details.scopes` lists where it can. | Use one of those scopes, or `effective: true` to read the value in force. |
+| `invalid_value` | The value has the wrong type, is not one of the allowed values, or a list has the wrong length. | The message says what is accepted. |
+| `out_of_range` | A number is outside the setting's range (`details.min`, `details.max`). | - |
+| `forbidden_key` | The agent may not write this setting (scripts, printer host and credentials, plug-ins, G-code unless allowed). | Ask the user to change it. |
+
+## View
+
+| Code | Meaning | What the agent should do |
+|---|---|---|
+| `gl_unavailable` | No usable OpenGL context: the 3D view was never shown since start-up. | Ask the user to bring the OrcaSlicer window on screen once. |
+
 ## Protocol errors
 
 JSON-RPC errors, not tool results:

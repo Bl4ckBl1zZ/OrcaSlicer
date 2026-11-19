@@ -7,16 +7,22 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <wx/app.h>
+#include <wx/dialog.h>
+#include <wx/scrolwin.h>
+#include <wx/window.h>
 #include <wx/msgdlg.h>
 #include <wx/timer.h>
 #include <wx/utils.h>
 
+#include "slic3r/GUI/Camera.hpp"
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/MainFrame.hpp"
 #include "slic3r/GUI/MsgDialog.hpp"
+#include "slic3r/GUI/Plater.hpp"
 
 #include "../McpDispatcher.hpp"
 #include "../McpJobs.hpp"
@@ -259,10 +265,79 @@ json debug_touch(ToolContext& ctx)
     return out;
 }
 
+// The window as the user has it: minimised or not, which tab, and the user's camera. Lets a test
+// check that offscreen rendering works in every window state and leaves the user's view alone.
+json debug_window(ToolContext& ctx)
+{
+    MainFrame*        frame = wxGetApp().mainframe;
+    Plater*           plater = wxGetApp().plater();
+    const std::string action = ctx.arg("action", "state");
+    if (action == "minimize")
+        frame->Iconize(true);
+    else if (action == "restore")
+        frame->Iconize(false);
+    else if (action == "preview")
+        frame->select_tab(wxString(TAB_ID_PREVIEW));
+    else if (action == "prepare")
+        frame->select_tab(wxString(TAB_ID_PREPARE));
+    else if (action == "preferences")
+        // As the user would: a modal dialog opened from the event loop, outside any call.
+        RunLater::start([]() { wxGetApp().open_preferences(); });
+    else if (action == "scroll_dialog" || action == "close_dialogs") {
+        for (wxWindow* window : wxTopLevelWindows) {
+            auto* dialog = dynamic_cast<wxDialog*>(window);
+            if (dialog == nullptr || !dialog->IsModal())
+                continue;
+            if (action == "close_dialogs") {
+                dialog->EndModal(wxID_CANCEL);
+                continue;
+            }
+            // Bring the end of the dialog's scrolled page into view (the MCP section is last).
+            std::vector<wxWindow*> pending { dialog };
+            while (!pending.empty()) {
+                wxWindow* current = pending.back();
+                pending.pop_back();
+                if (auto* scrolled = dynamic_cast<wxScrolledWindow*>(current)) {
+                    scrolled->Scroll(0, 100000);
+                    break;
+                }
+                for (wxWindow* child : current->GetChildren())
+                    pending.push_back(child);
+            }
+        }
+    }
+
+    json out = json::object();
+    out["minimized"] = frame->IsIconized();
+    out["shown"] = frame->IsShown();
+    out["active"] = frame->IsActive();
+    out["preview_tab"] = plater->is_preview_shown();
+    const Camera& camera = plater->get_camera();
+    json          matrix = json::array();
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c)
+            matrix.push_back(camera.get_view_matrix().matrix()(r, c));
+    out["user_camera"] = json::object({{"view_matrix", std::move(matrix)}, {"zoom", camera.get_zoom()}});
+    return out;
+}
+
 } // namespace
 
 MCP_TOOL_GROUP(Debug)
 {
+    {
+        ToolDef tool;
+        tool.name = "debug_window";
+        tool.description = "Test only. Reports the window state and the user's camera; can minimise or restore the window and switch between the Prepare and Preview tabs.";
+        tool.input_schema = Schema::parse(R"JSON({"type": "object", "properties": {
+            "action": {"enum": ["state", "minimize", "restore", "preview", "prepare", "preferences", "scroll_dialog", "close_dialogs"], "default": "state"}},
+            "additionalProperties": false})JSON", "debug_window");
+        tool.requires_idle_ui = false;
+        tool.accepts_if_rev = false;
+        tool.debug_only = true;
+        tool.handler = debug_window;
+        registry.add(std::move(tool));
+    }
     {
         ToolDef tool;
         tool.name = "debug_job";

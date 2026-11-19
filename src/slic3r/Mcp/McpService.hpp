@@ -8,7 +8,10 @@
 //   mcp_enabled   "true" / "false"   off by default
 //   mcp_port      TCP port on 127.0.0.1, default 13720
 // The access token lives in <data_dir>/mcp/token. While the server runs, <data_dir>/mcp/endpoint.json
-// holds {"url", "port", "token", "pid", "version"} for local helpers and tests.
+// holds {"schema": 1, "url", "port", "token", "pid", "protocolVersions", "app", "appVersion"} for
+// local helpers (the stdio bridge) and tests. It is written through a temporary file and a rename,
+// readable by the user only, rewritten when the port or the token changes, and removed when the
+// server stops.
 //
 // Environment overrides, read once at start-up, for automated test launches:
 //   ORCA_MCP_ENABLE=1|0        force the server on or off regardless of preferences
@@ -16,6 +19,7 @@
 //   ORCA_MCP_TOKEN=<token>     use this token instead of the stored one (not saved)
 //   ORCA_MCP_DEBUG_TOOLS=1     also register the debug_* tools used by the test-suite
 //   ORCA_MCP_ENDPOINT_FILE=<path>   write a second copy of endpoint.json there
+//   ORCA_MCP_WINDOW=minimized  minimise the main window once the application is up
 //
 // Main thread only, except recent_activity() and status(), which may be called from any thread.
 

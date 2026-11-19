@@ -21,6 +21,7 @@ Preferences > General > **MCP server (AI agent control)**:
 | Enable MCP server | Starts or stops the server at once; no restart needed. |
 | Port | TCP port on `127.0.0.1`, default `13720`. If the port is taken the server does not start and the status line says so; it never picks another port, because client configurations hold the address. |
 | Status | `Listening on http://127.0.0.1:13720/mcp`, `Stopped`, or the reason it is not running. |
+| Allow the agent to edit G-code settings | Off by default. G-code text settings can be read but not changed unless this is on (`mcp_allow_gcode_edit`). |
 | Connect Claude Code > Copy command | Copies the `claude mcp add ...` command, including the token. |
 | Client configuration > Copy JSON | Copies a `.mcp.json` entry, including the token. |
 | Access token > Copy token | Copies the token alone. |
@@ -28,7 +29,9 @@ Preferences > General > **MCP server (AI agent control)**:
 
 The settings are stored in the application configuration as `mcp_enabled` and `mcp_port`. The
 token is stored in `<data folder>/mcp/token`. While the server runs,
-`<data folder>/mcp/endpoint.json` holds `{"url", "port", "token", "pid", "version"}`.
+`<data folder>/mcp/endpoint.json` holds
+`{"schema": 1, "url", "port", "token", "pid", "protocolVersions", "app", "appVersion"}` for local
+helpers such as the stdio bridge; it is removed when the server stops.
 
 ## Connecting a client
 
@@ -89,7 +92,7 @@ are used only for malformed requests, unknown methods and tools, and bad protoco
 | `Origin` | Any request carrying an `Origin` header is rejected with `403`: native clients send none, web pages always do. No CORS headers are ever sent and preflight requests are not answered. |
 | `Host` | Must be `127.0.0.1:<port>` or `localhost:<port>`, which defeats DNS rebinding. |
 | Method and type | `POST` with `Content-Type: application/json` only. |
-| Limits | 8 MB request body, 50 requests per second, 16 connections. |
+| Limits | 8 MB request body, 200 requests per second, 32 connections. |
 | Files | Tools read only from the configured read folders (default: Documents, Downloads, Desktop and the workspace) and write only into the write folders (default: the workspace `<data folder>/mcp/workspace`), never over an existing file unless asked to. Configuration keys `mcp_read_roots`, `mcp_write_roots` (`;`-separated). |
 | Never exposed | Printer communication, cloud login, the network plug-in, the plug-in system, preferences other than this section. |
 
@@ -134,8 +137,12 @@ One reference page per tool group:
 |---|---|---|
 | Core | `app_status`, `history`, `job_status`, `job_cancel` | [tools-core.md](tools-core.md) |
 | Scene | `scene_get`, `object_update` | [tools-scene.md](tools-scene.md) |
+| Mesh | `mesh_query` | [tools-mesh.md](tools-mesh.md) |
+| Settings | `settings_search`, `settings_get`, `preset_list`, `filament_list` | [tools-settings.md](tools-settings.md) |
+| View | `screenshot` | [tools-view.md](tools-view.md) |
 
-`tools/list` is the authority on what a build offers.
+[tools.md](tools.md) is the complete reference, generated from the registry
+(`tests/mcp/gen_tool_reference.py`); `tools/list` is the authority on what a build offers.
 
 ## Build and environment
 
@@ -152,5 +159,6 @@ start-up, nothing is saved):
 | `ORCA_MCP_ROOTS=<a;b>` | Extra folders tools may read from and write to. |
 | `ORCA_MCP_ENDPOINT_FILE=<path>` | Write a second copy of `endpoint.json` there. |
 | `ORCA_MCP_DEBUG_TOOLS=1` | Also register the `debug_*` tools the test-suite uses. |
+| `ORCA_MCP_WINDOW=minimized` | Minimise the main window once the application is up (test runs on a desktop in use). |
 
 The client test-suite lives in `tests/mcp`; see [adding-tools.md](adding-tools.md#tests).
