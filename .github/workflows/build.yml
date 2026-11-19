@@ -347,7 +347,7 @@ jobs:
           # OrcaSlicer; the rootfs is the bridge's largest piece.
           $entries = (& $tar -t -f $zip) | ForEach-Object { ($_ -replace '\\', '/').TrimEnd('/') }
           if ($LASTEXITCODE -ne 0) { throw "The zip cannot be read back." }
-          foreach ($wanted in 'OrcaSlicer/data_dir', 'OrcaSlicer/orca-slicer.exe',
+          foreach ($wanted in 'OrcaSlicer/data_dir', 'OrcaSlicer/orca-slicer.exe', 'OrcaSlicer/orca-mcp-bridge.exe',
                               'OrcaSlicer/linux_runtime/slicer_linux_runtime.dll',
                               'OrcaSlicer/linux_runtime/slicer_linux_runtime_host_abi1',
                               'OrcaSlicer/linux_runtime/windows-wsl2-rootfs.tar') {
@@ -567,6 +567,12 @@ jobs:
           codesign --force --sign - --timestamp=none "${machos[@]}"
           codesign --force --sign - --timestamp=none "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
+          # The MCP stdio bridge ships inside the bundle (src/mcp_bridge); Claude Desktop runs it
+          # directly, so it must be there and carry a valid signature of its own.
+          bridge="$app/Contents/MacOS/orca-mcp-bridge"
+          [ -x "$bridge" ] || { echo "::error::orca-mcp-bridge missing from $app"; exit 1; }
+          codesign --verify --strict --verbose=2 "$bridge"
+          [ "$(lipo -archs "$bridge")" = "arm64" ] || { echo "::error::orca-mcp-bridge is not arm64"; exit 1; }
           codesign --display --verbose=2 "$app" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
           grep -q '^Signature=adhoc$' "$RUNNER_TEMP/codesign.txt"
 

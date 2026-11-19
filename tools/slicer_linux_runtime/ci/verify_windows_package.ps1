@@ -1,7 +1,7 @@
 # Checks that an installed Windows build (build\OrcaSlicer after "build_win.bat -s -i") carries
 # the complete Bambu "Linux runtime" package. The install step only warns when the Linux-built
 # inputs are missing, and such a build starts fine but can never load the network plug-in - so
-# packaging must stop here instead.
+# packaging must stop here instead. It also checks for the MCP stdio bridge (orca-mcp-bridge.exe).
 #
 # Usage: verify_windows_package.ps1 -InstallDir <dir> [-RuntimeManifest <runtime-files.sha256>]
 #                                   [-RequireEmptyDataDir]
@@ -69,6 +69,23 @@ Write-Host "Application:"
 [void](Get-RequiredFile $InstallDir 'OrcaSlicer.dll' 10000000)
 if (!(Test-Path -LiteralPath (Join-Path $InstallDir 'resources\profiles') -PathType Container)) {
     Add-Problem 'missing: resources\profiles'
+}
+
+# The MCP stdio bridge (src/mcp_bridge): Claude Desktop and other stdio MCP clients start it to
+# reach the app's MCP server. An x64 PE executable next to orca-slicer.exe.
+Write-Host "MCP stdio bridge:"
+$bridge = Get-RequiredFile $InstallDir 'orca-mcp-bridge.exe' 50000
+if ($bridge) {
+    $head = Read-Head $bridge 1024
+    if ($head.Length -ne 1024 -or $head[0] -ne 0x4D -or $head[1] -ne 0x5A) {
+        Add-Problem 'orca-mcp-bridge.exe is not a PE file'
+    } else {
+        $pe = [System.BitConverter]::ToInt32($head, 0x3C)
+        if ($pe -lt 0 -or $pe + 6 -gt $head.Length -or [System.BitConverter]::ToUInt32($head, $pe) -ne 0x00004550 -or
+            [System.BitConverter]::ToUInt16($head, $pe + 4) -ne 0x8664) {
+            Add-Problem 'orca-mcp-bridge.exe is not an x64 PE executable'
+        }
+    }
 }
 
 Write-Host "Linux runtime package (linux_runtime):"
@@ -178,6 +195,6 @@ if (!(Test-Path -LiteralPath $dataDir -PathType Container)) {
 }
 
 if ($problems.Count -gt 0) {
-    throw ("The build lacks a complete Bambu Linux runtime package:`n  - " + ($problems -join "`n  - "))
+    throw ("The build is incomplete (Bambu Linux runtime package or MCP bridge):`n  - " + ($problems -join "`n  - "))
 }
-Write-Host 'Bambu Linux runtime package: complete'
+Write-Host 'Bambu Linux runtime package and MCP bridge: complete'
