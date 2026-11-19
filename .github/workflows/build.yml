@@ -2,22 +2,24 @@ name: Build
 
 # Windows x64 (with the Bambu Linux bridge) and macOS arm64 builds of this fork.
 #
-#   linux-runtime -> windows-x64 \
-#                    macos-arm64  -> release (tags only, draft)
+#   linux-runtime -> windows-x64 (setup .exe + portable zip) \
+#                    macos-arm64 (DMG)                        -> release (v* tags only)
 #
 # Runs on demand and for version tags only: Windows and macOS minutes are expensive in a private
-# repository. The dependency builds are cached; a first run from the default branch fills the
-# caches every later run (tags included) restores.
+# repository. A manual run leaves the installers as artifacts of the run; a tag such as
+# v2.5.1-bambu.1 (v<version in version.inc>[-<suffix>]) publishes them as a GitHub release.
+# The dependency builds are cached; a first run from the default branch fills the caches every
+# later run (tags included) restores.
 
 on:
   workflow_dispatch:
     inputs:
       windows:
-        description: Build Windows x64 (Bambu Linux bridge)
+        description: Build Windows x64 (Bambu Linux bridge; setup and portable zip)
         type: boolean
         default: true
       macos:
-        description: Build macOS arm64 (unsigned)
+        description: Build macOS arm64 DMG (ad-hoc signed)
         type: boolean
         default: true
       linux:
@@ -159,7 +161,8 @@ jobs:
     # compiles can go through a compiler cache: a hosted runner needs well over two hours to
     # compile everything, and minutes when the objects come out of the cache.
     runs-on: windows-2022
-    timeout-minutes: 330
+    # The build step's own limit (300) plus about half an hour for packing, the setup and its test.
+    timeout-minutes: 345
     permissions:
       contents: read
       # Deleting the compiler cache entries a new one supersedes.
@@ -173,6 +176,8 @@ jobs:
       # __DATE__ or __TIME__; headers a fresh checkout has just written.
       CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
       CCACHE_LEG: windows-2022-x64-msvc
+      NSIS_VERSION: '3.13'
+      NSIS_SHA256: BA63DFFC4410EE89193E1CB5A41989991BD77C61068DA17E3156D136B7B0B3D8
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -191,12 +196,20 @@ jobs:
           if ($content -notmatch 'set\(SoftFever_VERSION "(.*?)"\)') { throw 'version.inc has no SoftFever_VERSION' }
           $version = $Matches[1]
           if ($env:GITHUB_REF_TYPE -eq 'tag') {
-            $label = $env:GITHUB_REF_NAME -replace '[^A-Za-z0-9._-]', '-'
+            # v2.5.1-bambu.1 on a 2.5.1 build: the tag names the release, the version the setup shows.
+            if ($env:GITHUB_REF_NAME -notmatch "^v$([regex]::Escape($version))(-[A-Za-z0-9.]+)?$") {
+              throw "Tag $env:GITHUB_REF_NAME does not match the application version $version (expected v$version or v$version-<suffix>)."
+            }
+            $label = $env:GITHUB_REF_NAME
+            $setupVersion = $env:GITHUB_REF_NAME.Substring(1)
           } else {
             $label = "V$version-$($env:GITHUB_SHA.Substring(0, 7))"
+            $setupVersion = "$version-$($env:GITHUB_SHA.Substring(0, 7))"
           }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "label=$label"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$setupVersion"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "zip=OrcaSlicer_BambuBridge_Windows_x64_${label}_portable.zip"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "setup=OrcaSlicer_BambuBridge_Windows_x64_${label}_setup.exe"
 
       - name: Download the Linux runtime
         uses: actions/download-artifact@v8
@@ -377,6 +390,89 @@ jobs:
           retention-days: 7
           compression-level: 0
 
+      # NSIS makes the setup, as upstream's: the same pinned release and checksum as upstream's
+      # build_orca.yml, kept in the Actions cache so most runs never download it.
+      - name: Restore NSIS
+        id: nsis_cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/nsis
+          key: nsis-${{ env.NSIS_VERSION }}
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          $nsisDir = Join-Path $env:RUNNER_TEMP 'nsis'
+          $makensis = Join-Path $nsisDir 'makensis.exe'
+          if (-not (Test-Path $makensis)) {
+            $zip = Join-Path $env:RUNNER_TEMP "nsis-$env:NSIS_VERSION.zip"
+            curl.exe -fsSL --retry 5 --retry-all-errors --retry-delay 15 -o $zip "https://downloads.sourceforge.net/project/nsis/NSIS%203/$env:NSIS_VERSION/nsis-$env:NSIS_VERSION.zip"
+            if ($LASTEXITCODE -ne 0) { throw "NSIS $env:NSIS_VERSION download failed." }
+            if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $env:NSIS_SHA256) {
+              throw "NSIS $env:NSIS_VERSION archive does not match its pinned SHA-256."
+            }
+            Expand-Archive $zip $env:RUNNER_TEMP
+            Move-Item (Join-Path $env:RUNNER_TEMP "nsis-$env:NSIS_VERSION") $nsisDir
+          }
+          & $makensis /VERSION
+          if ($LASTEXITCODE -ne 0) { throw 'makensis does not start.' }
+
+      - name: Save NSIS
+        if: steps.nsis_cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nsis
+          key: nsis-${{ env.NSIS_VERSION }}
+
+      # A per-user setup of the verified tree above, with data_dir kept apart as user data
+      # (tools/windows_installer/OrcaSlicerBambuBridge.nsi says why).
+      - name: Build the setup
+        shell: pwsh
+        run: >
+          ./tools/windows_installer/build_installer.ps1
+          -SourceDir build/OrcaSlicer
+          -OutFile (Join-Path 'build' '${{ steps.meta.outputs.setup }}')
+          -Version '${{ steps.meta.outputs.version }}'
+          -Makensis (Join-Path $env:RUNNER_TEMP 'nsis/makensis.exe')
+
+      # Silent install into a scratch folder, the same checks as the portable tree, an upgrade
+      # over it with something in data_dir, and an uninstall that must leave only data_dir.
+      - name: Test the setup
+        shell: pwsh
+        run: >
+          ./tools/windows_installer/test_installer.ps1
+          -Installer (Join-Path 'build' '${{ steps.meta.outputs.setup }}')
+          -InstallDir (Join-Path $env:RUNNER_TEMP 'setup-test')
+          -SourceDir build/OrcaSlicer
+          -RuntimeManifest (Join-Path $env:RUNNER_TEMP 'linux-runtime/runtime-files.sha256')
+
+      - name: Describe the setup
+        shell: pwsh
+        env:
+          SETUP_NAME: ${{ steps.meta.outputs.setup }}
+        run: |
+          $setup = Join-Path 'build' $env:SETUP_NAME
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setup).Hash.ToLowerInvariant()
+          $sizeMb = [math]::Round((Get-Item -LiteralPath $setup).Length / 1MB)
+          @(
+            ""
+            "``$env:SETUP_NAME`` ($sizeMb MB), SHA-256 ``$hash``"
+            ""
+            "Setup: installs for the current user into ``%LOCALAPPDATA%\Programs\OrcaSlicer-BambuBridge`` (no administrator rights); settings in its ``data_dir`` folder, kept on upgrade and uninstall."
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload the setup
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64-setup
+          path: |
+            build/${{ steps.meta.outputs.setup }}
+            build/${{ steps.meta.outputs.setup }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
   macos-arm64:
     name: macOS arm64
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.macos }}
@@ -411,12 +507,18 @@ jobs:
           version=$(grep 'set(SoftFever_VERSION' version.inc | cut -d '"' -f2)
           [ -n "$version" ] || { echo "version.inc has no SoftFever_VERSION"; exit 1; }
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            label=$(printf '%s' "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '-')
+            # The same rule as the Windows job: v<version> or v<version>-<suffix>.
+            version_re=$(printf '%s' "$version" | sed 's/[.]/[.]/g')
+            if ! printf '%s' "$GITHUB_REF_NAME" | grep -Eq "^v${version_re}(-[A-Za-z0-9.]+)?$"; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match the application version $version"
+              exit 1
+            fi
+            label="$GITHUB_REF_NAME"
           else
             label="V${version}-${GITHUB_SHA:0:7}"
           fi
           echo "label=$label" >> "$GITHUB_OUTPUT"
-          echo "dmg=OrcaSlicer_Mac_arm64_${label}_unsigned.dmg" >> "$GITHUB_OUTPUT"
+          echo "dmg=OrcaSlicer_BambuBridge_macOS_arm64_${label}.dmg" >> "$GITHUB_OUTPUT"
           [ "$(uname -m)" = "arm64" ] || { echo "this job needs an arm64 runner, got $(uname -m)"; exit 1; }
 
       # CMake and Ninja, as upstream.
@@ -598,7 +700,20 @@ jobs:
           cp -R build/arm64/OrcaSlicer/OrcaSlicer.app "$stage/"
           codesign --verify --deep --strict "$stage/OrcaSlicer.app"
           ln -sfn /Applications "$stage/Applications"
-          create_dmg "OrcaSlicer" "$stage" "$DMG_NAME"
+          create_dmg "OrcaSlicer Bambu Bridge" "$stage" "$DMG_NAME"
+
+          # What the user drags: the app, arm64, and the Applications link.
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$DMG_NAME" > /dev/null
+          ls -la "$mount"
+          [ -d "$mount/OrcaSlicer.app" ] && [ -L "$mount/Applications" ] &&
+            [ "$(readlink "$mount/Applications")" = "/Applications" ] &&
+            [ "$(lipo -archs "$mount/OrcaSlicer.app/Contents/MacOS/OrcaSlicer")" = "arm64" ] || {
+              hdiutil detach "$mount" > /dev/null
+              echo "::error::the DMG lacks OrcaSlicer.app (arm64) or the Applications link"
+              exit 1
+            }
+          hdiutil detach "$mount" > /dev/null
 
           hash=$(shasum -a 256 "$DMG_NAME" | awk '{print $1}')
           echo "$hash  $DMG_NAME" > "$DMG_NAME.sha256"
@@ -609,11 +724,11 @@ jobs:
             echo "\`$DMG_NAME\` ($size_mb MB), SHA-256 \`$hash\`"
             echo
             echo "**Not signed with an Apple Developer ID and not notarized** (ad-hoc signature only)."
-            echo "macOS quarantines it after a download and reports the app as damaged. After copying"
-            echo "OrcaSlicer to Applications, clear the quarantine once:"
+            echo "Gatekeeper blocks the first start of a downloaded copy. After dragging OrcaSlicer to"
+            echo "Applications, clear the quarantine once (or see the release notes for the other ways):"
             echo
             echo '```'
-            echo 'xattr -cr /Applications/OrcaSlicer.app'
+            echo 'xattr -dr com.apple.quarantine /Applications/OrcaSlicer.app'
             echo '```'
             echo
             echo "This build has no Bambu Linux bridge; it loads Bambu's macOS network plug-in like stock OrcaSlicer."
@@ -630,8 +745,11 @@ jobs:
           retention-days: 7
           compression-level: 0
 
+  # A published (not draft) release for a version tag, with the setup, the portable zip, the DMG,
+  # a .sha256 for each and the notes in .github/release_notes.md. Only tags push here; a manual run
+  # leaves its installers as artifacts of the run.
   release:
-    name: Draft release
+    name: Release
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
     needs: [windows-x64, macos-arm64]
     runs-on: ubuntu-24.04
@@ -642,19 +760,32 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Download the Windows build
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          lfs: 'false'
+          sparse-checkout: .github
+          path: src
+
+      - name: Download the Windows setup
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-x64-setup
+          path: dist
+
+      - name: Download the Windows portable zip
         uses: actions/download-artifact@v8
         with:
           name: windows-x64-portable
           path: dist
 
-      - name: Download the macOS build
+      - name: Download the macOS DMG
         uses: actions/download-artifact@v8
         with:
           name: macos-arm64-dmg
           path: dist
 
-      - name: Create the draft release
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -662,19 +793,28 @@ jobs:
         run: |
           cd dist
           ls -l
+          setup=$(ls -- *_setup.exe)
+          zip=$(ls -- *_portable.zip)
+          dmg=$(ls -- *.dmg)
+          for f in "$setup" "$zip" "$dmg"; do
+            case "$f" in *"$TAG"*) ;; *) echo "::error::$f does not carry the tag $TAG"; exit 1 ;; esac
+            [ -f "$f.sha256" ] || { echo "::error::$f has no .sha256"; exit 1; }
+          done
           sha256sum -c -- *.sha256
-          cat -- *.sha256 > SHA256SUMS.txt
-          rm -- *.sha256
-          {
-            echo "OrcaSlicer with the Bambu Linux bridge for Windows, built from \`$TAG\` (\`$GITHUB_SHA\`)."
-            echo
-            echo "- **Windows x64**: portable zip. Unzip anywhere and run \`orca-slicer.exe\`; needs WSL2."
-            echo "- **macOS arm64**: not signed with an Apple Developer ID and not notarized. After copying"
-            echo "  OrcaSlicer to Applications, run \`xattr -cr /Applications/OrcaSlicer.app\` once."
-          } > "$RUNNER_TEMP/notes.md"
-          # A re-run of the same tag updates the release it already made.
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" ./* --clobber
-          else
-            gh release create "$TAG" ./* --draft --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          cat -- "$setup.sha256" "$zip.sha256" "$dmg.sha256" > SHA256SUMS.txt
+
+          sed -e "s|@TAG@|$TAG|g" -e "s|@APP_VERSION@|${TAG#v}|g" -e "s|@SHA@|$GITHUB_SHA|g"               -e "s|@SETUP@|$setup|g" -e "s|@ZIP@|$zip|g" -e "s|@DMG@|$dmg|g"               ../src/.github/release_notes.md > "$RUNNER_TEMP/notes.md"
+          if grep -n '@[A-Z_]*@' "$RUNNER_TEMP/notes.md"; then
+            echo "::error::placeholders left in the release notes"
+            exit 1
           fi
+
+          assets=("$setup" "$setup.sha256" "$zip" "$zip.sha256" "$dmg" "$dmg.sha256" SHA256SUMS.txt)
+          # A re-run of the same tag replaces the assets and the notes of the release it made.
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+            gh release edit "$TAG" --draft=false --title "OrcaSlicer Bambu Bridge $TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$TAG" "${assets[@]}" --verify-tag --title "OrcaSlicer Bambu Bridge $TAG"               --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          gh release view "$TAG" --json url,isDraft,assets --jq '{url, isDraft, assets: [.assets[] | {name, size}]}'
