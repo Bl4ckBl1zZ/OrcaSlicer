@@ -56,7 +56,14 @@ plate entry has the state plus `time_s`, `time`, `filament_g`, `filament_m`, `co
 `layer_height`, `height_mm`, `filament_changes`, `warning_count`, `warnings` (first five messages),
 `outcome`, `duration_s`. When still running after `wait_s`: `status: "running"` and a `hint`; poll
 with `slice_status`. A plate that already has a valid result is not re-sliced (`reused: true`).
-Errors: `validation_failed`, `nothing_to_slice`, `busy_slicing`.
+Refused with `untrusted_scripts` while the process preset runs post-processing scripts
+(`post_process`; printers of the BBL type run them while slicing) or slicing plug-ins
+(`slicing_pipeline_plugin`) the user has not saved in their own process preset: an unsaved edit, or
+a preset that came with a project file. The agent cannot set either; the user saves the preset in
+the window (then they are the user's own) or removes them. `details.settings` lists
+`{key, preset, reason}`.
+
+Errors: `validation_failed`, `nothing_to_slice`, `busy_slicing`, `untrusted_scripts`.
 
 ## slice_status
 

@@ -95,7 +95,8 @@ are used only for malformed requests, unknown methods and tools, and bad protoco
 | Limits | 8 MB request body, 200 requests per second, 32 connections. A body that nests arrays or objects deeper than 64 levels is refused before it is parsed (JSON-RPC `-32700`, HTTP 400). |
 | Files | Tools read only from the configured read folders (default: Documents, Downloads, Desktop and the workspace) and write only into the write folders (default: the workspace `<data folder>/mcp/workspace`), never over an existing file unless asked to. Configuration keys `mcp_read_roots`, `mcp_write_roots` (`;`-separated). See [File paths](#file-paths). |
 | Printer secrets | `printhost_apikey`, `printhost_password`, `printhost_user`, `printhost_port`, `printhost_cafile`, `print_host`, `print_host_webui` and `flashforge_serial_number` are never returned: every read gives `"<redacted>"` when set (`""` when empty), including `preset_diff`, the unsaved edits listed by `unsaved_changes` / `discarded`, and the old and new values `settings_set` reports. They, `host_type` and the other printer-host keys cannot be written (`forbidden_key`). |
-| Projects | `project_open` never brings custom G-code without the user's G-code permission (`untrusted_gcode`, see [tools-project.md](tools-project.md#project_open)), and always removes post-processing scripts (`post_process`) a project would add. |
+| Projects | `project_open` never brings custom G-code without the user's G-code permission (`untrusted_gcode`, see [tools-project.md](tools-project.md#project_open)): the G-code in effect after the load and plate custom G-code are compared with the user's own presets, so neither the file's own list of changed settings nor a "published" project gets around it. Post-processing scripts, slicing plug-ins and printer connection settings (`post_process`, `slicing_pipeline_plugin`, `printer_agent`, `host_type`, ...) a project would bring are always put back to the user's values, also in the presets the file brought. `model_import` of a 3MF drops all of these from the imported objects' settings. |
+| Scripts | `slice` and `export_file` (G-code) are refused (`untrusted_scripts`) while the process preset runs post-processing scripts or slicing plug-ins the user has not saved in their own preset (an unsaved edit, or a preset that came with a project file). |
 | Never exposed | Printer communication, cloud login, the network plug-in, the plug-in system, preferences other than this section. |
 
 The model is: other users of the computer and web pages in the user's browser must not be able to
@@ -126,9 +127,35 @@ checked in three steps, and a refusal is `path_denied` (or `not_found`, `exists`
    - read: the file must exist and be a regular file, else `not_found`;
    - write: the parent folder must exist (`path_denied`, "the folder ... does not exist"); the
      target must not be a symbolic link (the agent never writes through a link) or a folder; an
-     existing file needs `overwrite: true` (`exists`); and whatever the configured folders say,
-     nothing is written into the application's data folder or installation folder (the workspace
-     excepted).
+     existing file needs `overwrite: true` (`exists`); an existing file with more than one hard
+     link is refused (`reason: hard_link`: writing would change the file under its other names);
+     and whatever the configured folders say, nothing is written into the application's data
+     folder or installation folder (the workspace excepted).
+4. **Read: the file is opened, then its final path checked.** The tool opens the file and asks the
+   system where the open file really is (Windows `GetFinalPathNameByHandle`, macOS `F_GETPATH`,
+   Linux `/proc/self/fd`); outside the allowed folders is `path_denied` with
+   `reason: changed_after_check` (a link or folder was swapped in after step 3). On Windows the
+   file stays open without delete sharing until the tool has loaded it, so it cannot be renamed,
+   replaced or moved away (nor can its folders be renamed) in between.
+5. **Write: checked again after writing.** The written file (no symbolic link, one hard link) must
+   resolve inside a write folder and outside the application's folders; otherwise
+   `changed_after_check` / `hard_link`. The application writes through its own exporters (temporary
+   file, then rename), which cannot be handed an open file, so this detects a redirection but
+   cannot prevent it.
+
+Containment compares folder **identities**, not spellings: a path is inside a folder when the folder
+itself or one of the path's parents is the same file-system object (device and file id), so a
+case-insensitive volume (NTFS, APFS and HFS+ by default) accepts the folder written in another case
+or Unicode normalisation, and a case-sensitive one does not mix up `Work` and `work`. Step 2 is
+only a pre-filter: it folds ASCII case on Windows and macOS, so a path whose letters differ only in
+non-ASCII case can be refused there although the volume would accept it.
+
+What remains (time of check to time of use): on macOS and Linux a file cannot be pinned, so a
+symbolic link swapped in between the open in step 4 and the application's own open could still
+redirect a read (only to a file of the user's that the agent then reads; writes are caught by step
+5). Hard links to files outside the folders can be read (the agent cannot create links; the user
+or another program would have had to). A program running as the user can always change files
+between calls; that is outside the threat model above.
 
 ## Working with the user
 

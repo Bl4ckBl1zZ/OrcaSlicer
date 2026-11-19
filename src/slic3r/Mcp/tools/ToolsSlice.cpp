@@ -33,6 +33,7 @@
 #include "../McpRefresh.hpp"
 #include "../McpSchema.hpp"
 #include "../McpTool.hpp"
+#include "project/LoadGuard.hpp"
 #include "slice/SliceAnalysisGlue.hpp"
 #include "slice/SliceData.hpp"
 #include "slice/SlicePreview.hpp"
@@ -41,6 +42,24 @@
 namespace Slic3r { namespace GUI { namespace Mcp {
 
 namespace {
+
+// Post-processing scripts run when G-code is exported, and on BBL printers already while slicing;
+// slicing plug-ins run while slicing. The agent may only trigger the ones the user made their own
+// (saved in a process preset of their library): not ones from a project file, not unsaved edits.
+void refuse_untrusted_scripts()
+{
+    const json found = LoadGuard::untrusted_scripts();
+    if (found.empty())
+        return;
+    std::string what;
+    for (const json& f : found)
+        what += (what.empty() ? "" : "; ") + f.value("key", "") + ": " + f.value("reason", "");
+    fail("untrusted_scripts",
+         "The process preset runs post-processing scripts or slicing plug-ins the user has not saved as their own (" + what +
+             "); slicing and G-code export are refused while they are set.",
+         "Ask the user to check them and either save the process preset in the window (then they are the user's own) or remove them.",
+         json::object({{"settings", found}}));
+}
 
 using namespace Slice;
 
@@ -158,6 +177,7 @@ json slice(ToolContext& ctx)
     install_summarizer();
     const int  target = plate_or_all(ctx);
     const bool all = target < 0;
+    refuse_untrusted_scripts();
     if (Tracker::instance().running_job() || slicing_now())
         fail("busy_slicing", "A slice is already running" + std::string(Tracker::instance().running_job() ? "." : " (started in the window)."),
              "Wait with slice_status, or stop it with slice_cancel.", json::object({{"plate", bsp_plate_index() + 1}}));
@@ -307,6 +327,7 @@ json export_gcode(ToolContext& ctx)
     const std::string kind = ctx.arg("kind", "gcode");
     const bool        overwrite = ctx.arg<bool>("overwrite", false);
     const int         target = plate_or_all(ctx);
+    refuse_untrusted_scripts();
     if (target < 0 && kind != "gcode_3mf")
         fail("invalid_argument", "`plate`: \"all\" is only possible with kind \"gcode_3mf\" (a .gcode file holds one plate).",
              "Export one plate per .gcode file, or use kind gcode_3mf for all plates in one file.");
@@ -334,6 +355,7 @@ json export_gcode(ToolContext& ctx)
         const CopyFileResult rc = copy_file(source, path.string(), error, false);
         if (rc != CopyFileResult::SUCCESS)
             fail("export_failed", "Writing \"" + path.string() + "\" failed: " + error, "Check the folder is writable, or pick another path.");
+        Files::verify_written(path, "path");
         json out = json::object();
         out["ok"] = true;
         out["kind"] = kind;
@@ -357,6 +379,7 @@ json export_gcode(ToolContext& ctx)
     const int    rc = plater().export_3mf(path, strategy, target < 0 ? PLATE_ALL_IDX : target);
     if (rc < 0 || !boost::filesystem::exists(path))
         fail("export_failed", "Writing \"" + path.string() + "\" failed (code " + std::to_string(rc) + ").", "Check the folder, or slice again.");
+    Files::verify_written(path, "path");
     json out = json::object();
     out["ok"] = true;
     out["kind"] = kind;

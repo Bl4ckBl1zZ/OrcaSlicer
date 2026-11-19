@@ -44,17 +44,31 @@ redacted, as everywhere); `discard` and `save` drop them, with a note listing wh
 `save` the project file just written holds them). To keep them as presets, `preset_save` first.
 
 Embedded custom G-code: without `trust_embedded_gcode` the G-code question ("Modified G-code" /
-"Customized Preset") is shown to the agent even if the user ticked "don't show again". If it comes
-up, the application has already loaded the presets, so the load is undone: the call fails with
-`untrusted_gcode`, `details: {path, questions}` (the question quoted), and an **empty project**
-remains. Check the G-code, then repeat with `trust_embedded_gcode: true` (which needs the
-preference above).
+"Customized Preset") is shown to the agent even if the user ticked "don't show again". That question
+relies on the list of changed settings the file itself carries and is skipped for "published"
+projects, so after the load the G-code in effect is also compared with the user's own presets: every
+G-code option (`machine_start_gcode`, `filament_start_gcode`, ... any `*_gcode` or code option) of
+the selected process, printer and filament presets against the user's preset of that name, or for a
+preset that came with the file its nearest ancestor (`inherits`) in the user's library (the defaults
+when there is none); the G-code options of the project's own settings; and the plates' custom G-code
+(`plate_layer_events` of type `custom`). If the question came up or anything differs, the
+application has already loaded the presets, so the load is undone: the call fails with
+`untrusted_gcode`, `details: {path, settings, questions}` (`settings`: `{scope, key, kind, name?,
+slot? / plate?}` for each difference; `questions`: the application's question quoted, if any), and
+an **empty project** remains. Check the G-code, then repeat with `trust_embedded_gcode: true` (which
+needs the preference above).
 
-Post-processing scripts: `post_process` is a program run on export, so a project opened through MCP
-never brings one, trusted G-code or not. When the process preset's `post_process` differs after the
-load, it is cleared (it shows as an unsaved edit of the process preset) and a note says so; scripts
-the user's preset already had stay. If clearing fails, the load is undone (empty project) and the
-call fails with `internal`.
+Scripts, plug-ins and the printer's connection: a project opened through MCP never brings them,
+trusted G-code or not. Post-processing scripts (`post_process`), plug-in backed options
+(`slicing_pipeline_plugin`, `printer_agent`, the `plugins` manifest, `*_plugin_config_overrides`)
+and network settings (`host_type`, `print_host`, `printhost_*`, `print_host_webui`,
+`bbl_use_printhost`, `flashforge_serial_number`) that differ from the user's presets (compared as
+above) are put back to the user's values: in the values in effect (where the project's preset is
+selected this shows as an unsaved edit) and in the presets the file brought, so discarding the edits
+does not bring them back. A note lists the keys. The same options are removed from the per-object,
+per-part and layer-range settings of the project (G-code options there too, unless
+`trust_embedded_gcode`). If this fails, the load is undone (empty project) and the call fails with
+`internal`. (The application itself already ignores `print_host` and the credentials of a project.)
 
 Questions answered: "unsaved changes - save?" (after `on_unsaved` was applied: No), "Newer 3MF
 version" and "Load 3MF" notices (informational, returned in `dialogs`), the old infill rotation
@@ -107,6 +121,10 @@ A multi-colour file (a 3MF with several filaments) adds filament slots to the pr
 GUI. That change is outside the undo stack: it is recorded in the journal (`history`, not
 revertible there) and a note says how many slots were added.
 
+A 3MF's per-object settings never bring G-code, post-processing scripts, plug-in or printer
+connection options (see `project_open`): they are removed from the imported objects, their parts
+and layer ranges, and a note lists them.
+
 Result: `{"ok": true, "imported": [objects in scene_get shape], "failed": [{path, error}]?, "dialogs": [...]}`.
 
 Errors: `path_denied` (outside the roots or an unsupported type), `not_found`, `plate_locked`,
@@ -140,4 +158,5 @@ file was written). The G-code kinds always write one file and add `kind`, and fo
 warnings of the plate, as in the `slice` result), for `gcode_3mf` `plates` (one such summary per
 exported plate).
 
-Errors: `path_denied`, `exists`, `not_sliced`, `busy_slicing`, `export_failed`, `invalid_argument`.
+Errors: `path_denied`, `exists`, `not_sliced`, `busy_slicing`, `export_failed`, `invalid_argument`,
+`untrusted_scripts` (kinds `gcode` / `gcode_3mf`; as for `slice`).
