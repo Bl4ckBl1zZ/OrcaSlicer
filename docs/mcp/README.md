@@ -136,6 +136,7 @@ One reference page per tool group:
 |---|---|---|
 | Core | `app_status`, `history`, `job_status`, `job_cancel` | [tools-core.md](tools-core.md) |
 | Scene | `scene_get`, `object_update` | [tools-scene.md](tools-scene.md) |
+| Settings | `settings_search`, `settings_get`, `preset_list`, `filament_list` | [tools-settings.md](tools-settings.md) |
 | View | `screenshot` | [tools-view.md](tools-view.md) |
 
 `tools/list` is the authority on what a build offers.
