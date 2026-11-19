@@ -84,7 +84,10 @@ Http prepared(Http http, const Host& h)
         http.header("X-Api-Key", h.apikey);
     if (!h.cafile.empty())
         http.ca_file(h.cafile);
+#ifdef WIN32
+    // Http::ssl_revoke_best_effort exists only on Windows (Schannel), see Utils/Http.hpp.
     http.ssl_revoke_best_effort(h.ssl_revoke_best_effort);
+#endif
     http.timeout_connect(4);
     http.timeout_max(10);
     return http;
