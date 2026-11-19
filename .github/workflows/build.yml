@@ -72,13 +72,13 @@ jobs:
           # A tar and a tar.gz; deflating them again only costs time.
           compression-level: 1
 
-  windows-x64:
-    name: Windows x64
-    needs: linux-runtime
+  # The dependencies change rarely and take over two hours to build on a hosted runner. They
+  # are a job of their own, with its own time limit, so that a cold slicer build after a cold
+  # dependency build cannot run out of one shared limit. When the cache entry exists, which
+  # is the usual case, the job only looks it up (about a minute).
+  windows-deps:
+    name: Windows dependencies
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows }}
-    # Not upstream's windows-latest: that image carries Visual Studio 2026 and upstream builds on
-    # it with clang-cl. The bridge has only ever been compiled with Visual Studio 2022's cl, so
-    # this job uses the same compiler and generator as the tested local build.
     runs-on: windows-2022
     timeout-minutes: 300
     permissions:
@@ -88,6 +88,100 @@ jobs:
         uses: actions/checkout@v7
         with:
           lfs: 'false'
+
+      - name: Look for the cached dependencies
+        id: deps
+        uses: actions/cache/restore@v6
+        with:
+          path: deps/build/OrcaSlicer_dep
+          key: windows-2022-x64-msvc-orcaslicer_deps-${{ hashFiles('deps/**') }}
+          lookup-only: true
+
+      - name: Describe the runner
+        if: steps.deps.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./tools/slicer_linux_runtime/ci/describe_windows_runner.ps1
+
+      - name: Get CMake
+        if: steps.deps.outputs.cache-hit != 'true'
+        uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9 # v4.3.4
+        with:
+          cmakeVersion: "~4.3.0"
+          useLocalCache: true
+          useCloudCache: true
+
+      - name: Set up MSBuild
+        if: steps.deps.outputs.cache-hit != 'true'
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+
+      - name: Build the dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          # OpenSSL's Configure needs a native Windows perl. The hosted images ship Strawberry
+          # Perl; install it where they do not. Only perl\bin goes on PATH: Strawberry's c\bin
+          # carries GNU tools the build must not pick up, and the perl of Git for Windows is an
+          # MSYS one that breaks the OpenSSL build.
+          $strawberry = 'C:\Strawberry\perl\bin'
+          if (-not (Test-Path "$strawberry\perl.exe")) {
+            choco install strawberryperl -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Strawberry Perl could not be installed.' }
+          }
+          $env:PATH = "$strawberry;$env:PATH"
+          $perlOs = & perl -e 'print $^O'
+          if ($perlOs -ne 'MSWin32') { throw "The perl on PATH is '$perlOs', not a native Windows perl." }
+
+          .\build_win.bat -d --vs 2022
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # Only the install prefix is cached; the build trees and the downloads are several
+          # GB. Best effort: a file a lingering compiler process still holds must not fail a
+          # finished dependency build.
+          Get-ChildItem deps\build -Force | Where-Object { $_.Name -ne 'OrcaSlicer_dep' } |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item deps\DL_CACHE -Recurse -Force -ErrorAction SilentlyContinue
+          exit 0
+
+      - name: Save the dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: deps/build/OrcaSlicer_dep
+          key: ${{ steps.deps.outputs.cache-primary-key }}
+
+  windows-x64:
+    name: Windows x64
+    needs: [linux-runtime, windows-deps]
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows }}
+    # Not upstream's windows-latest: that image carries Visual Studio 2026 and upstream builds on
+    # it with clang-cl. The bridge has only ever been compiled with Visual Studio 2022's cl, so
+    # this job keeps that compiler. It drives it with Ninja instead of MSBuild so that the
+    # compiles can go through a compiler cache: a hosted runner needs well over two hours to
+    # compile everything, and minutes when the objects come out of the cache.
+    runs-on: windows-2022
+    timeout-minutes: 330
+    permissions:
+      contents: read
+      # Deleting the compiler cache entries a new one supersedes.
+      actions: write
+    env:
+      CCACHE_DIR: ${{ github.workspace }}\.ccache
+      CCACHE_MAXSIZE: 4G
+      # The compiler is part of an image that is rebuilt often, so its mtime means nothing.
+      CCACHE_COMPILERCHECK: content
+      # The precompiled header, whose macros ccache cannot see; the few files that use
+      # __DATE__ or __TIME__; headers a fresh checkout has just written.
+      CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
+      CCACHE_LEG: windows-2022-x64-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          lfs: 'false'
+
+      - name: Describe the runner
+        shell: pwsh
+        run: ./tools/slicer_linux_runtime/ci/describe_windows_runner.ps1
 
       - name: Name the build
         id: meta
@@ -114,6 +208,7 @@ jobs:
         shell: pwsh
         run: ./tools/slicer_linux_runtime/ci/stage_linux_runtime.ps1 -ArtifactDir (Join-Path $env:RUNNER_TEMP 'linux-runtime')
 
+      # CMake and Ninja.
       - name: Get CMake
         uses: lukka/get-cmake@f5b8fbb4d77cec1acc5a5f9f0df4beffaf5d98d9 # v4.3.4
         with:
@@ -121,58 +216,109 @@ jobs:
           useLocalCache: true
           useCloudCache: true
 
-      - name: Set up MSBuild
-        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
-
-      # Restore and save are separate steps, so a dependency build is kept even when the
-      # slicer build after it fails.
+      # Built by the windows-deps job of this run, or by an earlier run.
       - name: Restore the dependencies
-        id: deps
         uses: actions/cache/restore@v6
         with:
           path: deps/build/OrcaSlicer_dep
           key: windows-2022-x64-msvc-orcaslicer_deps-${{ hashFiles('deps/**') }}
+          fail-on-cache-miss: true
 
-      - name: Build the dependencies
-        if: steps.deps.outputs.cache-hit != 'true'
+      # Compiler cache for the slicer build. Every step of it may fail without failing the
+      # build, which then compiles everything. A pinned ccache release: caching cl with a
+      # precompiled header needs a recent one, and the version is part of what was tested.
+      - name: Install the compiler cache
+        id: ccache
+        continue-on-error: true
+        shell: pwsh
+        env:
+          CCACHE_VERSION: 4.14.3
+          CCACHE_SHA256: c845c3d65be81954c75659145a522a793a27586bf940c5dcfe18af33fa1a67dd
+          CCACHE_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = "ccache-$env:CCACHE_VERSION-windows-x86_64"
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          Invoke-WebRequest -Uri "https://github.com/ccache/ccache/releases/download/v$env:CCACHE_VERSION/$name.zip" -OutFile $zip
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          if ($hash -ne $env:CCACHE_SHA256) { throw "$name.zip has SHA-256 $hash, not the pinned one." }
+          Expand-Archive -LiteralPath $zip -DestinationPath $env:RUNNER_TEMP -Force
+          $bin = Join-Path $env:RUNNER_TEMP $name
+          # Captured first: piping it into Select-Object -First 1 closes the pipe early and
+          # ccache then exits with an error.
+          $version = & (Join-Path $bin 'ccache.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw 'ccache does not start.' }
+          $version | Select-Object -First 1
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          Add-Content -Path $env:GITHUB_ENV -Value "CCACHE_ENTRY=ccache-$env:CCACHE_LEG-$env:CCACHE_RUN"
+          # Read by build_win.bat and handed to the slicer's configure. No debug information:
+          # a compile that writes it into the PDB its target shares (/Zi) cannot be cached,
+          # and kept in the objects (/Z7) it pushes libslic3r_gui.lib past the 4 GB a
+          # library may have (LNK1248). The code is the same; the PDBs, which the package
+          # never contained, hold public symbols only.
+          Add-Content -Path $env:GITHUB_ENV -Value 'ORCA_SLICER_CMAKE_ARGS=-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DSLIC3R_MSVC_PDB=OFF'
+
+      - name: Restore the compiler cache
+        id: ccache_restore
+        if: steps.ccache.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ github.workspace }}\.ccache
+          key: ${{ env.CCACHE_ENTRY }}
+          restore-keys: ccache-${{ env.CCACHE_LEG }}-
+
+      # The step's own limit is below the job's, so that a build which runs out of time
+      # still gets to save what it compiled: the next run starts from there.
+      - name: Build and install OrcaSlicer
+        timeout-minutes: 300
         shell: pwsh
         run: |
-          # OpenSSL's Configure needs a native Windows perl. The hosted images ship Strawberry
-          # Perl; install it where they do not. Only perl\bin goes on PATH: Strawberry's c\bin
-          # carries GNU tools the build must not pick up, and the perl of Git for Windows is an
-          # MSYS one that breaks the OpenSSL build.
-          $strawberry = 'C:\Strawberry\perl\bin'
-          if (-not (Test-Path "$strawberry\perl.exe")) {
-            choco install strawberryperl -y --no-progress
-            if ($LASTEXITCODE -ne 0) { throw 'Strawberry Perl could not be installed.' }
-          }
-          $env:PATH = "$strawberry;$env:PATH"
-          $perlOs = & perl -e 'print $^O'
-          if ($perlOs -ne 'MSWin32') { throw "The perl on PATH is '$perlOs', not a native Windows perl." }
+          if (Get-Command ccache -ErrorAction SilentlyContinue) { ccache -z }
+          # One compiler per logical processor. Ninja's default of two more would only add
+          # memory pressure: the private-repository runner has 2 of them and 8 GB.
+          .\build_win.bat -s -i -x -j $env:NUMBER_OF_PROCESSORS
 
-          .\build_win.bat -d --vs 2022
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compiler cache statistics
+        if: ${{ always() && steps.ccache.outcome == 'success' }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          ccache --evict-older-than 7d
+          ccache -s -v
 
-          # Only the install prefix is needed from here on (and cached); the build trees and the
-          # downloads are several GB the slicer build needs the room for. Best effort: a file a
-          # lingering compiler process still holds must not fail a finished dependency build.
-          Get-ChildItem deps\build -Force | Where-Object { $_.Name -ne 'OrcaSlicer_dep' } |
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item deps\DL_CACHE -Recurse -Force -ErrorAction SilentlyContinue
-          exit 0
-
-      - name: Save the dependencies
-        if: steps.deps.outputs.cache-hit != 'true'
+      # Entries are immutable, so each run saves a new one and then drops the older ones. A
+      # failed or timed-out build saves too. Only branch runs save: an entry saved by a tag
+      # run can be restored by that tag alone.
+      - name: Save the compiler cache
+        id: ccache_save
+        if: ${{ always() && steps.ccache_restore.outcome == 'success' && github.ref_type == 'branch' }}
+        continue-on-error: true
         uses: actions/cache/save@v6
         with:
-          path: deps/build/OrcaSlicer_dep
-          key: ${{ steps.deps.outputs.cache-primary-key }}
+          path: ${{ github.workspace }}\.ccache
+          key: ${{ env.CCACHE_ENTRY }}
 
-      - name: Build and install OrcaSlicer
-        shell: pwsh
+      - name: Drop older compiler cache entries
+        if: ${{ always() && steps.ccache_save.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='FreeGB';e={[math]::Round($_.Free / 1GB, 1)}} -AutoSize
-          .\build_win.bat -s -i --vs 2022
+          # The save step reports success even when its tar failed, so keep the older entries
+          # unless the new one is listed.
+          if ! gh cache list --ref "$GITHUB_REF" --key "$CCACHE_ENTRY" --json key \
+              | jq -e --arg entry "$CCACHE_ENTRY" 'any(.[]; .key == $entry)' > /dev/null; then
+            echo "$CCACHE_ENTRY was not saved; keeping the older entries."
+            exit 0
+          fi
+          gh cache list --ref "$GITHUB_REF" --key "ccache-$CCACHE_LEG-" --limit 100 --json id,key \
+            | jq -r --arg prefix "ccache-$CCACHE_LEG-" --argjson run "$GITHUB_RUN_ID" \
+                '.[] | select((.key | ltrimstr($prefix) | split("-")[0] | tonumber?) < $run) | .id' \
+            | tr -d '\r' \
+            | while read -r id; do gh cache delete "$id"; done
 
       # The install step only warns when the Linux runtime is missing. Such a build starts, but
       # can never load the Bambu network plug-in, so it must not be published.

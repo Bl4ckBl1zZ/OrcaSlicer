@@ -23,6 +23,14 @@ for version tags:
   `xattr -cr /Applications/OrcaSlicer.app`. The macOS build has no bridge: it uses Bambu's macOS plug-in
   like stock OrcaSlicer.
 
+**Windows build time.** GitHub's Windows runner for a private repository has 2 processors and 8 GB. A
+run that finds nothing cached needs over four hours: about 2¼ h for the dependencies (the `Windows
+dependencies` job) and about 2¼ h to compile the slicer. Both are cached from `main` (GitHub drops an entry
+unused for a week), and a run that finds them takes about 15 minutes: the slicer compiles with Visual Studio
+2022's cl through Ninja and ccache, and only linking and packing take time. A change to `deps/` rebuilds
+the dependencies; a change to a header that many files include recompiles most of the slicer. The compiler
+cache is saved even when the build fails or runs out of time, so the next run carries on from there.
+
 **Linux job on a self-hosted runner.** The `linux-runtime` job (the bridge's Linux host and the WSL rootfs)
 runs on GitHub's `ubuntu-24.04` unless the repository variable `LINUX_RUNNER` (*Settings > Secrets and
 variables > Actions > Variables*) holds a runner label, for the graysmith runners `graysmith-4cpu`. Windows
