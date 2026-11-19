@@ -89,6 +89,21 @@ def test_validation_errors(client, scope, values, code, fragment):
         assert fragment in failure.message + " " + failure.hint + " " + str(failure.details), failure.payload
 
 
+def test_file_forms_are_accepted(client):
+    # Values as presets and 3MF files store them: "1"/"0" for switches, and old enum names the app maps on load
+    # (a Bambu file's "zig-zag" is read as rectilinear).
+    current = client.tool("settings_get", scope="process", keys=["enable_support", "sparse_infill_pattern"])["values"]
+    support = "0" if current["enable_support"] else "1"
+    result = client.tool("settings_set", scope="process", values={"enable_support": support, "sparse_infill_pattern": "zig-zag"})
+    try:
+        changes = {c["key"]: c for c in result["changed"]}
+        assert changes["enable_support"]["new"] is (support == "1")
+        new_pattern = client.tool("settings_get", scope="process", keys=["sparse_infill_pattern"])["values"]["sparse_infill_pattern"]
+        assert new_pattern == "rectilinear"
+    finally:
+        revert_journal(client, result["journal"])
+
+
 def test_batch_is_atomic(client):
     before = client.tool("scene_get")["process"]["modified"]
     failure = client.tool_error("settings_set", scope="process", values={"wall_loops": 4, "sparse_infill_density": "lots"})

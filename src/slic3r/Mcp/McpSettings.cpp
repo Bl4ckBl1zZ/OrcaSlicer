@@ -163,6 +163,9 @@ std::string element_text(const ConfigOptionDef& def, const std::string& key, Con
     case coBool:
         if (value.is_boolean()) return value.get<bool>() ? "1" : "0";
         if (value.is_number_integer() && (value.get<long long>() == 0 || value.get<long long>() == 1)) return value.get<long long>() == 1 ? "1" : "0";
+        // The serialised form ("1" / "0"), as presets and 3MF project settings store it.
+        if (value.is_string() && (value == "1" || value == "true")) return "1";
+        if (value.is_string() && (value == "0" || value == "false")) return "0";
         invalid_value(key, value, "true or false");
     case coInt:
         if (!value.is_number() || std::floor(value.get<double>()) != value.get<double>())
@@ -209,7 +212,15 @@ std::string element_text(const ConfigOptionDef& def, const std::string& key, Con
     case coEnum: {
         if (!value.is_string())
             invalid_value(key, value, "one of the allowed values (a string)", json::object({{"values", def.enum_values}}));
-        const std::string text = value.get<std::string>();
+        std::string text = value.get<std::string>();
+        {
+            // Old names the app still reads from presets and 3MF files (e.g. "zig-zag", now "rectilinear"): take the current one.
+            t_config_option_key legacy_key = key;
+            std::string         legacy_value = text;
+            PrintConfigDef::handle_legacy(legacy_key, legacy_value);
+            if (legacy_key == key && !legacy_value.empty())
+                text = legacy_value;
+        }
         const bool known = std::find(def.enum_values.begin(), def.enum_values.end(), text) != def.enum_values.end() ||
                            (def.enum_keys_map != nullptr && def.enum_keys_map->count(text) != 0);
         if (!known) {
