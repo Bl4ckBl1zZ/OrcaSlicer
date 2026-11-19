@@ -44,6 +44,18 @@ Add a code to this page when a tool introduces one. Prefer an existing code.
 | `invalid_value` | The value has the wrong type, is not one of the allowed values, or a list has the wrong length. | The message says what is accepted. |
 | `out_of_range` | A number is outside the setting's range (`details.min`, `details.max`). | - |
 | `forbidden_key` | The agent may not write this setting (scripts, printer host and credentials, plug-ins, G-code unless allowed). | Ask the user to change it. |
+| `unknown_preset` | No preset of that type has this name. `details.offered` lists what the selector offers. | Pick from `details.offered` or `preset_list`. |
+| `incompatible` | The preset exists but is not offered for the current printer (or print). | Pick a compatible one, or select the printer it belongs to first. |
+| `unsaved_changes` | The operation would drop unsaved preset edits. `details` lists them. | Repeat with `on_unsaved` (`discard`, `carry_over`, `save`), or `preset_save` first. |
+| `system_preset` | System presets cannot be overwritten, renamed or deleted. | Save under a new `name`. |
+| `name_exists` | A preset of that name exists. | Choose another name, or `overwrite: true` for a user preset. |
+| `nothing_modified` | There are no unsaved edits to save or discard. | - |
+| `overlap` | A height range would overlap another range of the object. `details.conflicts_with`. | Change the bounds; ranges may touch. |
+| `last_part` | The object would be left without a solid part. | Delete the object instead, or keep a part. |
+| `last_filament` | The project needs at least one filament. | - |
+| `in_use` | The filament slot is used by objects, parts, height ranges or paint. `details.used_by`. | Give `replace_with`. |
+| `limit` | The maximum number of filament slots is reached. | Remove a slot first. |
+| `load_failed` | A mesh file could not be read. | Check the file. |
 
 ## View
 
