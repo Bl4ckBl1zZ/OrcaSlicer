@@ -37,6 +37,11 @@ Questions answered: "unsaved changes - save?" (after `on_unsaved` was applied: N
 version" and "Load 3MF" notices (informational, returned in `dialogs`), the old infill rotation
 template fix (Yes), "STEP names not UTF-8" (OK).
 
+The application's 3MF reader keeps only one instance per object and plate (its plate map is keyed
+by object), so further instances of an object would come back on no plate; `project_open` puts
+such instances on the plate they lie on. (A project opened in the GUI shows the same upstream
+problem.)
+
 Result: `{"ok": true, "changed": <scene summary>}`.
 
 Errors: `path_denied`, `not_found`, `unsaved_changes`, `no_path`, `load_failed` (with the
@@ -72,8 +77,12 @@ Import model files into the current project as new objects. One undo step.
 
 Each file is loaded on its own (`Plater::load_files`, one file per call), so the multi-file "load
 as a single object?" question never comes up; `as: "single_object"` assembles afterwards. Objects
-are placed as the GUI places them (bed centre or the nearest free spot); call `object_arrange` to
-pack them.
+are placed as the GUI places them (bed centre or the nearest free spot); within one call several
+objects can land on the same spot (a note says so), so call `object_arrange` to pack them.
+
+A multi-colour file (a 3MF with several filaments) adds filament slots to the project, as in the
+GUI. That change is outside the undo stack: it is recorded in the journal (`history`, not
+revertible there) and a note says how many slots were added.
 
 Result: `{"ok": true, "imported": [objects in scene_get shape], "failed": [{path, error}]?, "dialogs": [...]}`.
 

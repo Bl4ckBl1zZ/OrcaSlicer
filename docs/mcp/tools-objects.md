@@ -3,8 +3,8 @@
 Source: `src/slic3r/Mcp/tools/ToolsObjects.cpp`, jobs in `tools/edit/EditJobs.cpp`. Tests: `tests/mcp/test_objects.py`.
 
 Edits are made on the `Model` and followed by the refresh recipes, the way the object manipulation
-panel works; the user's selection is not touched, except where noted (split to objects and cut
-select the new objects, as the GUI does). Every mutating call is one undo step named
+panel works; the user's selection is not touched, except by `object_cut` (the new objects are
+selected, as after the GUI's Cut). Every mutating call is one undo step named
 `MCP: <what> <ids>`; long operations (arrange, orient, simplify, repair) take their undo step when
 they start, so one undo returns to the state before the job.
 
@@ -44,12 +44,12 @@ Transform objects (all their instances), instances, or parts. The steps run in t
 | `set_size` | `{size: [x\|null, y\|null, z\|null], uniform: true}` | Absolute size in mm (instances). Uniform: the first given axis sets the factor. |
 | `mirror` | `x\|y\|z\|[vector]` | |
 | `reset` | `["rotation", "scale", "mirror"]` | |
-| `lay_flat` | `{facet, volume?}` \| `{normal, frame: world\|object}` \| `{auto: true, rank?}` | Put a face on the bed (instances): a mesh facet, the direction that should face down, or the largest flat face of the convex hull (`rank` 2 = second largest). |
+| `lay_flat` | `{facet, volume?}` \| `{normal, frame: world\|object}` \| `{face}` \| `{auto: true, rank?}` | Put a face on the bed (instances): a mesh facet, the direction that should face down, a face number from `mesh_query` `flat_faces` (same list, same order), or the largest flat face of the convex hull (`rank` 2 = second largest). |
 | `drop_to_bed` | boolean, default true | Lowest point to z = 0 after the steps (unless `move_to.z_min` is given). |
 
 Result: `{"ok": true, "changed": [objects with new boxes and plate assignment], "details"?}`;
-`details[].lay_flat` has `normal_world_before`, for `auto` also `face_area_mm2`, `rank` and the
-five largest `candidates`. Errors: `stale_id`, `invalid_argument`, `plate_locked`, `mesh_error`.
+`details[].lay_flat` has `normal_world_before`; for `face` and `auto` also `face`, `face_area_mm2`,
+`rank` and the five largest `candidates`. Errors: `stale_id`, `invalid_argument`, `plate_locked`, `mesh_error`.
 
 ## object_duplicate
 
@@ -71,9 +71,10 @@ object with connectors are refused. Result: `removed` ids and the scene summary.
 
 ## object_split
 
-`{target, into: objects|parts, keep_z}`. Objects: one object per separate shell
-(`Plater::split_object`); `keep_z: true` answers the GUI's "keep floating parts at their height?"
-with Yes. Parts: the target part (or the object's only part) becomes one part per shell.
+`{target, into: objects|parts, keep_z}`. Objects: one object per separate shell, done on the
+Model as `Plater::priv::split_object` does (the public `Plater::split_object(int, bool)` is declared
+but not defined); `keep_z: true` keeps floating pieces at their height (auto-drop off), what the
+GUI's "Disable Auto-Drop?" question does. The selection is not changed. Parts: the target part (or the object's only part) becomes one part per shell.
 Errors: `not_splittable`, `invalid_argument`, `stale_id`.
 
 ## object_merge
@@ -94,6 +95,8 @@ removes the sources. Result: `created`, `removed`.
 | `place_on_cut_upper`, `place_on_cut_lower` | boolean | false | Lay a half on its cut face. |
 
 Uses `Slic3r::Cut::perform_with_plane` and `Plater::apply_cut_object_to_model`, as the Cut gizmo.
+The pieces stay where they were cut, so with `keep: both` they overlap on the plate (a note says
+so); `object_arrange` separates them.
 Connectors (dowels, plugs, grooves) are not available. Errors: `invalid_argument` (plane misses
 the object, contradictory options), `mesh_error`.
 
