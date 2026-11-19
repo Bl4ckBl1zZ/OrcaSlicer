@@ -25,8 +25,13 @@ namespace {
 wxString status_text()
 {
     const ServiceStatus status = Service::instance().status();
-    if (status.running)
+    if (status.running) {
+        const AppConfig* config = wxGetApp().app_config;
+        if (config != nullptr && !config->get_bool("mcp_enabled"))
+            // A test launch: the environment switched the server on, whatever the checkbox says.
+            return wxString::Format(_L("Listening on %s (switched on by the environment)"), wxString::FromUTF8(status.url));
         return wxString::Format(_L("Listening on %s"), wxString::FromUTF8(status.url));
+    }
     if (status.enabled && !status.error.empty())
         return wxString::Format(_L("Not running: %s"), wxString::FromUTF8(status.error));
     return _L("Stopped");
@@ -91,6 +96,12 @@ void add_preferences_section(PreferencesDialog& dialog, wxWindow* parent, wxSize
         row->Add(status, 0, wxALIGN_CENTER);
         sizer->Add(row);
     }
+
+    // What the agent may touch.
+    sizer->Add(dialog.create_item_checkbox(_L("Allow the agent to edit G-code settings"),
+                                           _L("Start, end, layer-change and other G-code text in the printer, filament and process settings can be "
+                                              "read by the agent but not changed, unless this is switched on. G-code can damage a printer."),
+                                           "mcp_allow_gcode_edit"));
 
     // Connecting a client.
     sizer->Add(dialog.create_item_button(_L("Connect Claude Code"), _L("Copy command"),
