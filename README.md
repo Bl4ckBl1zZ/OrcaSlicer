@@ -8,20 +8,59 @@ downloads it from Bambu's servers when the network plug-in is installed. The for
 retries a print that A1 firmware rejects with error `050x-409D` when a BMCU is attached. Everything below
 the line is upstream's README.
 
+## Download and install
+
+Installers are on this repository's **Releases** page (*Releases* in the sidebar, or
+`https://github.com/Bl4ckBl1zZ/OrcaSlicer-BambuBridge/releases/latest`). The repository is private, so only
+accounts with access to it can open the page and download. Each release has:
+
+| File | For |
+|---|---|
+| `OrcaSlicer_BambuBridge_Windows_x64_<tag>_setup.exe` | Windows 10/11 x64: setup (recommended) |
+| `OrcaSlicer_BambuBridge_Windows_x64_<tag>_portable.zip` | Windows 10/11 x64: portable |
+| `OrcaSlicer_BambuBridge_macOS_arm64_<tag>.dmg` | macOS 11+ on Apple Silicon |
+
+plus a `.sha256` for each file and `SHA256SUMS.txt`. The release notes repeat the steps below.
+
+**Windows setup.** It is not code-signed, so SmartScreen says *"Windows protected your PC"*: click
+**More info**, then **Run anyway**. It installs for the current user into
+`%LOCALAPPDATA%\Programs\OrcaSlicer-BambuBridge`, without administrator rights, and adds a Start menu entry
+*OrcaSlicer Bambu Bridge*, an optional desktop shortcut and an entry in *Settings > Apps*. Settings, presets
+and the Bambu login live in the `data_dir` folder of the installation, the same way as in the portable zip.
+That keeps them apart from a stock OrcaSlicer in `%APPDATA%\OrcaSlicer`, whose network plug-in folder this
+build would otherwise replace. A newer setup installs over an older one and keeps `data_dir`. The
+uninstaller keeps `data_dir` unless you agree to delete it. It never removes the WSL distro; to remove that
+yourself, run `wsl --unregister OrcaSlicer-BambuBridge`. Source: `tools/windows_installer/` (NSIS).
+
+**Windows portable zip.** Unzip it anywhere you can write to and run `orca-slicer.exe`. Settings stay in
+`data_dir` next to it.
+
+**WSL 2 is required for Bambu printers on Windows.** If it is missing, run `wsl --install` in an
+administrator terminal and restart Windows. The first time the Bambu network plug-in is installed,
+OrcaSlicer imports its own distro `OrcaSlicer-BambuBridge` into `%LOCALAPPDATA%\OrcaSlicer-BambuBridge`. All
+copies of this build on one PC share that distro.
+
+**macOS.** Open the DMG and drag OrcaSlicer onto Applications. It is Apple Silicon only, **ad-hoc signed,
+with no Apple Developer ID and no notarization**, so Gatekeeper blocks the first start. Run
+`xattr -dr com.apple.quarantine /Applications/OrcaSlicer.app` once. Instead, you can right-click the app and
+choose **Open** (macOS 14 and earlier), or click **Open Anyway** in *System Settings > Privacy & Security*
+(macOS 15 and later). The app is named `OrcaSlicer.app` and shares its settings with a stock OrcaSlicer. It
+has no bridge and uses Bambu's macOS plug-in, as stock OrcaSlicer does.
+
+## Builds
+
 **Builds** come from the `Build` workflow (`.github/workflows/build.yml`), which runs only on demand and
 for version tags:
 
-- *Actions > Build > Run workflow* builds Windows x64 and/or macOS arm64; the results are the
-  `windows-x64-portable` and `macos-arm64-dmg` artifacts of the run. Run it once from `main` first: that
-  fills the dependency caches every later run (tags included) restores.
-- Pushing a tag that starts with `v` on a commit of this fork (for example `v2.5.1-bridge.1`) builds both
-  and attaches them to a **draft** release for that tag.
-- Windows: a portable zip. Unzip it anywhere and run `orca-slicer.exe`; it needs WSL2 and keeps its
-  settings in the `data_dir` folder next to the executable, apart from a stock OrcaSlicer.
-- macOS: Apple Silicon only, **not signed with an Apple Developer ID and not notarized** (ad-hoc signature
-  only). After copying OrcaSlicer to Applications, clear the download quarantine once with
-  `xattr -cr /Applications/OrcaSlicer.app`. The macOS build has no bridge: it uses Bambu's macOS plug-in
-  like stock OrcaSlicer.
+- *Actions > Build > Run workflow* builds Windows x64 and/or macOS arm64. The results are artifacts of the
+  run: `windows-x64-setup`, `windows-x64-portable` and `macos-arm64-dmg`. Nothing is released. Run it once
+  from `main` first: that fills the dependency caches every later run (tags included) restores.
+- Pushing a tag `v<version>-<suffix>` (the version from `version.inc`, for example `v2.5.1-bambu.1`) builds
+  both platforms and **publishes** a release for that tag with the files above. The tag must be new to this
+  fork: never push `v2.5.1` itself, which is upstream's tag. To release:
+  `git tag v2.5.1-bambu.2 && git push private refs/tags/v2.5.1-bambu.2`.
+- In CI, the Windows setup is installed silently into a scratch folder, checked with
+  `verify_windows_package.ps1`, upgraded over itself and uninstalled before it is uploaded.
 
 **Windows build time.** GitHub's Windows runner for a private repository has 2 processors and 8 GB. A
 run that finds nothing cached needs over four hours: about 2¼ h for the dependencies (the `Windows
