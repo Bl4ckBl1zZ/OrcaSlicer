@@ -121,12 +121,15 @@ LaunchSpec build_default_launch_spec()
     spec.description = "macos via OrbStack machine with qemu-user";
     // A machine that is missing or stopped makes orb fail or start it; the host's exit is reported by the RPC
     // client either way. install_runtime_macos.sh creates the machine.
+    // The slicer hands the plug-in files in its temporary folder (the print job's 3MF), which macOS names
+    // /var/folders/...; /var is the Mac's /private/var, which OrbStack shares as /private but not as /var.
     spec.argv = {
         orbstack_cli_path(),
         "-m", machine_name(component_dir),
         "-u", "root",
         "env", std::string("SLICER_LINUX_RUNTIME_EXEC_PREFIX=") + exec_prefix,
-        "sh", (component_dir / windows_wsl_bootstrap_script_file_name()).string(),
+        "sh", "-c", "[ -e /var/folders ] || ln -s /private/var/folders /var/folders; exec sh \"$0\" \"$@\"",
+        (component_dir / windows_wsl_bootstrap_script_file_name()).string(),
         component_dir.string(), component_cache_dir(component_dir).string()
     };
     return spec;
