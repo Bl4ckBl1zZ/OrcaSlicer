@@ -60,9 +60,13 @@ plug-in although OrbStack is installed, start OrcaSlicer with `SLICER_LINUX_RUNT
 **Builds** come from the `Build` workflow (`.github/workflows/build.yml`), which runs only on demand and
 for version tags:
 
-- *Actions > Build > Run workflow* builds Windows x64 and/or macOS arm64. The results are artifacts of the
-  run: `windows-x64-setup`, `windows-x64-portable` and `macos-arm64-dmg`. Nothing is released. Run it once
-  from `main` first: that fills the dependency caches every later run (tags included) restores.
+- *Actions > Build > Run workflow* builds Windows x64 and/or macOS arm64. The installers end up on a
+  **draft** release named `build-<run id>` (linked from the run's summary); it creates no tag and only
+  collaborators see it, so delete it when done. Run it once from `main` first: that fills the dependency
+  caches every later run (tags included) restores.
+- The jobs pass files to each other through [graysmith](https://github.com/Bl4ckBl1zZ/graysmith)'s
+  artifact store instead of GitHub's, so they don't use the account's Actions storage quota and don't
+  appear on the run page.
 - Pushing a tag `v<version>-<suffix>` (the version from `version.inc`, for example `v2.5.1-bambu.1`) builds
   both platforms and **publishes** a release for that tag with the files above. The tag must be new to this
   fork: never push `v2.5.1` itself, which is upstream's tag. To release:

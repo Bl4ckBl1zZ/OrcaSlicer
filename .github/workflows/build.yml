@@ -6,10 +6,12 @@ name: Build
 #                    macos-arm64 (DMG)                        -> release (v* tags only)
 #
 # Runs on demand and for version tags only: Windows and macOS minutes are expensive in a private
-# repository. A manual run leaves the installers as artifacts of the run; a tag such as
+# repository. A manual run puts the installers on a draft release build-<run id>; a tag such as
 # v2.5.1-bambu.1 (v<version in version.inc>[-<suffix>]) publishes them as a GitHub release.
 # The dependency builds are cached; a first run from the default branch fills the caches every
-# later run (tags included) restores.
+# later run (tags included) restores. Jobs hand files to each other through graysmith's artifact
+# store (Bl4ckBl1zZ/graysmith/{upload,download}-artifact), not GitHub's, whose storage quota a private
+# repository fills quickly; each such job needs id-token: write to authenticate.
 
 on:
   workflow_dispatch:
@@ -55,6 +57,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      # Authenticates the artifact upload and download to graysmith.
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -65,7 +69,7 @@ jobs:
         run: bash tools/slicer_linux_runtime/ci/build_linux_runtime.sh --output-dir "$RUNNER_TEMP/linux-runtime"
 
       - name: Upload the Linux runtime
-        uses: actions/upload-artifact@v7
+        uses: Bl4ckBl1zZ/graysmith/upload-artifact@main
         with:
           name: linux-runtime
           path: ${{ runner.temp }}/linux-runtime
@@ -167,6 +171,8 @@ jobs:
       contents: read
       # Deleting the compiler cache entries a new one supersedes.
       actions: write
+      # Authenticates the artifact upload and download to graysmith.
+      id-token: write
     env:
       CCACHE_DIR: ${{ github.workspace }}\.ccache
       CCACHE_MAXSIZE: 4G
@@ -212,7 +218,7 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "setup=OrcaSlicer_BambuBridge_Windows_x64_${label}_setup.exe"
 
       - name: Download the Linux runtime
-        uses: actions/download-artifact@v8
+        uses: Bl4ckBl1zZ/graysmith/download-artifact@main
         with:
           name: linux-runtime
           path: ${{ runner.temp }}/linux-runtime
@@ -380,7 +386,7 @@ jobs:
           ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
 
       - name: Upload the portable zip
-        uses: actions/upload-artifact@v7
+        uses: Bl4ckBl1zZ/graysmith/upload-artifact@main
         with:
           name: windows-x64-portable
           path: |
@@ -463,7 +469,7 @@ jobs:
           ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
 
       - name: Upload the setup
-        uses: actions/upload-artifact@v7
+        uses: Bl4ckBl1zZ/graysmith/upload-artifact@main
         with:
           name: windows-x64-setup
           path: |
@@ -484,6 +490,8 @@ jobs:
       contents: read
       # Deleting the compiler cache entries a new one supersedes.
       actions: write
+      # Authenticates the artifact upload and download to graysmith.
+      id-token: write
     env:
       HOMEBREW_NO_AUTO_UPDATE: '1'
       HOMEBREW_NO_INSTALL_CLEANUP: '1'
@@ -601,7 +609,7 @@ jobs:
           restore-keys: ccache-${{ env.CCACHE_LEG }}-
 
       - name: Download the Linux runtime
-        uses: actions/download-artifact@v8
+        uses: Bl4ckBl1zZ/graysmith/download-artifact@main
         with:
           name: linux-runtime
           path: ${{ runner.temp }}/linux-runtime
@@ -754,7 +762,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the DMG
-        uses: actions/upload-artifact@v7
+        uses: Bl4ckBl1zZ/graysmith/upload-artifact@main
         with:
           name: macos-arm64-dmg
           path: |
@@ -765,8 +773,8 @@ jobs:
           compression-level: 0
 
   # A published (not draft) release for a version tag, with the setup, the portable zip, the DMG,
-  # a .sha256 for each and the notes in .github/release_notes.md. Only tags push here; a manual run
-  # leaves its installers as artifacts of the run.
+  # a .sha256 for each and the notes in .github/release_notes.md. Only tags publish here; a manual run
+  # ends in the test-build job below.
   release:
     name: Release
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
@@ -775,6 +783,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
+      # Authenticates the artifact upload and download to graysmith.
+      id-token: write
     defaults:
       run:
         shell: bash
@@ -787,19 +797,19 @@ jobs:
           path: src
 
       - name: Download the Windows setup
-        uses: actions/download-artifact@v8
+        uses: Bl4ckBl1zZ/graysmith/download-artifact@main
         with:
           name: windows-x64-setup
           path: dist
 
       - name: Download the Windows portable zip
-        uses: actions/download-artifact@v8
+        uses: Bl4ckBl1zZ/graysmith/download-artifact@main
         with:
           name: windows-x64-portable
           path: dist
 
       - name: Download the macOS DMG
-        uses: actions/download-artifact@v8
+        uses: Bl4ckBl1zZ/graysmith/download-artifact@main
         with:
           name: macos-arm64-dmg
           path: dist
@@ -837,3 +847,60 @@ jobs:
             gh release create "$TAG" "${assets[@]}" --verify-tag --title "OrcaSlicer Bambu Bridge $TAG"               --notes-file "$RUNNER_TEMP/notes.md"
           fi
           gh release view "$TAG" --json url,isDraft,assets --jq '{url, isDraft, assets: [.assets[] | {name, size}]}'
+
+  # A manual run's installers as a draft release named build-<run id>. graysmith keeps the artifacts,
+  # and they don't show on the run page; release assets don't count against the account's Actions
+  # storage either. A draft creates no tag and only collaborators see it; delete it when done.
+  test-build:
+    name: Draft release of a manual run
+    if: >-
+      ${{ always() && github.event_name == 'workflow_dispatch' &&
+      (needs.windows-x64.result == 'success' || needs.macos-arm64.result == 'success') }}
+    needs: [windows-x64, macos-arm64]
+    # Next to graysmith's artifact store when the self-hosted runner is in use.
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Download the Windows setup
+        if: needs.windows-x64.result == 'success'
+        uses: Bl4ckBl1zZ/graysmith/download-artifact@main
+        with:
+          name: windows-x64-setup
+          path: dist
+
+      - name: Download the Windows portable zip
+        if: needs.windows-x64.result == 'success'
+        uses: Bl4ckBl1zZ/graysmith/download-artifact@main
+        with:
+          name: windows-x64-portable
+          path: dist
+
+      - name: Download the macOS DMG
+        if: needs.macos-arm64.result == 'success'
+        uses: Bl4ckBl1zZ/graysmith/download-artifact@main
+        with:
+          name: macos-arm64-dmg
+          path: dist
+
+      - name: Publish the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: build-${{ github.run_id }}
+        run: |
+          cd dist
+          ls -l
+          sha256sum -c -- *.sha256
+          # A re-run of the same run replaces the assets of the draft it made.
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" ./* --clobber
+          else
+            gh release create "$TAG" ./* --draft --target "$GITHUB_SHA" --title "Test build $GITHUB_RUN_ID ($GITHUB_REF_NAME)" \
+              --notes "Manual build of $GITHUB_SHA from run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Not a release; delete it when done."
+          fi
+          url=$(gh release view "$TAG" --json url --jq .url)
+          echo "Installers: $url" | tee -a "$GITHUB_STEP_SUMMARY"
