@@ -3,6 +3,9 @@ set -eu
 
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 CACHE_FILE="$DIR/.selected_host_abi"
+# Runs the x86-64 host through an emulator on other architectures, e.g. "qemu-x86_64 -L /opt/x64root"
+# on macOS, where the Linux machine is arm64. Word-split on purpose.
+EXEC_PREFIX="${SLICER_LINUX_RUNTIME_EXEC_PREFIX:-}"
 
 run_probe() {
     bin="$1"
@@ -10,7 +13,7 @@ run_probe() {
     LD_LIBRARY_PATH="$DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     SLICER_LINUX_RUNTIME_PROBE_LOG_DIR="${SLICER_LINUX_RUNTIME_PROBE_LOG_DIR:-$DIR}" \
     SLICER_LINUX_RUNTIME_COUNTRY_CODE="${SLICER_LINUX_RUNTIME_COUNTRY_CODE:-US}" \
-    "$bin" --probe-auth >/dev/null 2>&1
+    $EXEC_PREFIX "$bin" --probe-auth >/dev/null 2>&1
 }
 
 choose_bin() {
@@ -58,4 +61,4 @@ if [ "${1:-}" = "--print-bin" ]; then
 fi
 
 export LD_LIBRARY_PATH="$DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "$BIN" "$@"
+exec $EXEC_PREFIX "$BIN" "$@"

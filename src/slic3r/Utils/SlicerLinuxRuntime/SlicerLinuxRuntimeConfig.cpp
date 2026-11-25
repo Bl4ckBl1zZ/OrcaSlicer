@@ -15,6 +15,12 @@
 #include <nlohmann/json.hpp>
 #include "../bambu_networking.hpp"
 
+#if defined(__APPLE__)
+#include <boost/dll/runtime_symbol_info.hpp>
+#include <boost/filesystem/operations.hpp>
+#include <unistd.h>
+#endif
+
 namespace Slic3r::SlicerLinuxRuntime {
 
 namespace {
@@ -102,11 +108,21 @@ const nlohmann::json* find_manifest_entry(const nlohmann::json& root, const std:
 
 bool enabled()
 {
-    // Windows x64 only: the runtime is a WSL2 distro running Bambu's linux-x86_64 plug-in.
-    // SLICER_LINUX_RUNTIME_ENABLED=0 in the environment falls back to the native plug-in flow.
-#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+    // Windows x64: the runtime is a WSL2 distro running Bambu's linux-x86_64 plug-in. macOS arm64: an OrbStack
+    // Linux machine runs it, so the bridge is on only where OrbStack is installed and the app bundle carries the
+    // runtime package, and the native plug-in is used otherwise. SLICER_LINUX_RUNTIME_ENABLED=0/1 in the
+    // environment overrides either default.
+#if (defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))) || (defined(__APPLE__) && defined(__aarch64__))
     static const bool value = [] {
+#if defined(_WIN32)
         bool configured_value = true;
+#else
+        boost::system::error_code ec;
+        const boost::filesystem::path exe = boost::dll::program_location(ec);
+        // Contents/MacOS/OrcaSlicer -> Contents/Resources/linux_runtime, see SlicerLinuxRuntimeInstaller.cpp.
+        bool configured_value = !ec && !orbstack_cli_path().empty() &&
+            boost::filesystem::is_directory(exe.parent_path().parent_path() / "Resources" / "linux_runtime", ec);
+#endif
         env_flag("SLICER_LINUX_RUNTIME_ENABLED", configured_value);
         return configured_value;
     }();
@@ -114,6 +130,22 @@ bool enabled()
 #else
     return false;
 #endif
+}
+
+std::string orbstack_cli_path()
+{
+#if defined(__APPLE__)
+    // An application started from Finder does not have the shell's PATH.
+    if (const char* path = std::getenv("SLICER_LINUX_RUNTIME_ORB"); path && *path)
+        return path;
+    const char* home = std::getenv("HOME");
+    for (const std::string& candidate : {std::string("/usr/local/bin/orb"), std::string("/opt/homebrew/bin/orb"),
+                                         home && *home ? std::string(home) + "/.orbstack/bin/orb" : std::string(),
+                                         std::string("/Applications/OrbStack.app/Contents/MacOS/bin/orb")})
+        if (!candidate.empty() && ::access(candidate.c_str(), X_OK) == 0)
+            return candidate;
+#endif
+    return {};
 }
 
 bool use_linux_runtime()
@@ -191,9 +223,9 @@ std::string mac_host_wrapper_file_name()
     return "slicer-linux-runtime-host-wrapper";
 }
 
-std::string mac_lima_instance_file_name()
+std::string mac_orbstack_machine_file_name()
 {
-    return "slicer_linux_runtime_lima_instance.txt";
+    return "slicer_linux_runtime_orbstack_machine.txt";
 }
 
 std::string mac_runtime_install_script_file_name()
@@ -255,7 +287,7 @@ bool is_overlay_runtime_filename(const std::string& file_name)
            file_name == "slicer_linux_runtime_host_abi1" ||
            file_name == "slicer_linux_runtime_host_abi0" ||
            file_name == mac_host_wrapper_file_name() ||
-           file_name == mac_lima_instance_file_name() ||
+           file_name == mac_orbstack_machine_file_name() ||
            file_name == mac_runtime_install_script_file_name() ||
            file_name == mac_runtime_verify_script_file_name() ||
            file_name == windows_wsl_distro_file_name() ||

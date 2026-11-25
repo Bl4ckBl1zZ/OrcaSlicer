@@ -387,6 +387,11 @@ function build_slicer() {
             rm ./OrcaSlicer.app/Contents/Resources
             cp -R "$resources_path" ./OrcaSlicer.app/Contents/Resources
             relocate_python_runtime ./OrcaSlicer.app
+            # Bambu Linux bridge: staged by src/slic3r/Utils/SlicerLinuxRuntime/CMakeLists.txt when the
+            # Linux side was built; without it the app uses Bambu's macOS plug-in.
+            if [ -d ../linux_runtime ]; then
+                cp -R ../linux_runtime ./OrcaSlicer.app/Contents/Resources/linux_runtime
+            fi
             # delete .DS_Store file
             find ./OrcaSlicer.app/ -name '.DS_Store' -delete
 

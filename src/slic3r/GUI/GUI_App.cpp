@@ -1822,7 +1822,7 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
         if (!SlicerLinuxRuntime::sync_runtime_package(plugin_folder, &sync_reason))
             BOOST_LOG_TRIVIAL(warning) << "[install_plugin] Linux runtime package not refreshed: " << sync_reason;
 
-        BOOST_LOG_TRIVIAL(info) << "[install_plugin] Linux runtime: installing/verifying the WSL distro";
+        BOOST_LOG_TRIVIAL(info) << "[install_plugin] Linux runtime: installing/verifying the runtime";
         const auto runtime = SlicerLinuxRuntime::install_wsl_runtime(
             plugin_folder, data_dir_path / "ota" / "plugins",
             [this, &cancel_fn]() { return m_networking_cancel_update || (cancel_fn && cancel_fn()); });
@@ -4269,7 +4269,7 @@ bool GUI_App::on_init_network(bool try_backup)
                 if (SlicerLinuxRuntime::enabled() && !linux_runtime_repair_tried) {
                     linux_runtime_repair_tried = true;
                     const boost::filesystem::path data_dir_path(data_dir());
-                    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": Linux runtime: installing/verifying the WSL distro and retrying";
+                    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": Linux runtime: installing/verifying the runtime and retrying";
                     if (SlicerLinuxRuntime::install_wsl_runtime(data_dir_path / "plugins", data_dir_path / "ota" / "plugins").ok()) {
                         load_agent_dll = Slic3r::NetworkAgent::initialize_network_module(false, config_version);
                         goto __retry;

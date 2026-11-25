@@ -1,9 +1,9 @@
 # OrcaSlicer 2.5.1 + Bambu Linux bridge (private fork)
 
-This is [OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer) **2.5.1** with a "Bambu Linux bridge" for
-Windows: on Windows x64 the application does not load Bambu's Windows network plug-in but a forwarder
-module (`slicer_linux_runtime.dll`) that runs Bambu's **Linux** plug-in (series **02.08.04**) inside a small
-dedicated WSL2 distro. Bambu's plug-in is not part of this repository or of any build; the application
+This is [OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer) **2.5.1** with a "Bambu Linux bridge": the
+application does not load Bambu's native network plug-in but a forwarder module (`slicer_linux_runtime.dll`
+on Windows x64, `libslicer_linux_runtime.dylib` on macOS arm64) that runs Bambu's **Linux** plug-in (series
+**02.08.04**) inside a small dedicated WSL2 distro on Windows, or an OrbStack Linux machine on macOS. Bambu's plug-in is not part of this repository or of any build; the application
 downloads it from Bambu's servers when the network plug-in is installed. The fork also acknowledges and
 retries a print that A1 firmware rejects with error `050x-409D` when a BMCU is attached. Everything below
 the line is upstream's README.
@@ -44,8 +44,16 @@ copies of this build on one PC share that distro.
 with no Apple Developer ID and no notarization**, so Gatekeeper blocks the first start. Run
 `xattr -dr com.apple.quarantine /Applications/OrcaSlicer.app` once. Instead, you can right-click the app and
 choose **Open** (macOS 14 and earlier), or click **Open Anyway** in *System Settings > Privacy & Security*
-(macOS 15 and later). The app is named `OrcaSlicer.app` and shares its settings with a stock OrcaSlicer. It
-has no bridge and uses Bambu's macOS plug-in, as stock OrcaSlicer does.
+(macOS 15 and later). The app is named `OrcaSlicer.app` and shares its settings with a stock OrcaSlicer.
+
+**OrbStack is required for the bridge on macOS.** Install [OrbStack](https://orbstack.dev) and start it once.
+Without OrbStack the app uses Bambu's macOS plug-in, as stock OrcaSlicer does. With it, the first install of
+the Bambu network plug-in creates an arm64 Ubuntu 26.04 machine `orca-bambu-bridge`, installs QEMU in it and
+unpacks an x86-64 root filesystem to `/opt/x64root`. Bambu's plug-in is x86-64 only and crashes under
+Rosetta, so the host runs through `qemu-x86_64`. Because of the emulation, loading the plug-in makes the
+start of OrcaSlicer about 20 seconds slower. To remove the machine, run `orb delete orca-bambu-bridge`. The
+machine sits behind OrbStack's NAT; LAN discovery of printers through it is untested. To use Bambu's macOS
+plug-in although OrbStack is installed, start OrcaSlicer with `SLICER_LINUX_RUNTIME_ENABLED=0` in the environment.
 
 ## Builds
 
@@ -70,7 +78,8 @@ unused for a week), and a run that finds them takes about 15 minutes: the slicer
 the dependencies; a change to a header that many files include recompiles most of the slicer. The compiler
 cache is saved even when the build fails or runs out of time, so the next run carries on from there.
 
-**Linux job on a self-hosted runner.** The `linux-runtime` job (the bridge's Linux host and the WSL rootfs)
+**Linux job on a self-hosted runner.** The `linux-runtime` job (the bridge's Linux host and the WSL rootfs,
+used by both the Windows and the macOS build)
 runs on GitHub's `ubuntu-24.04` unless the repository variable `LINUX_RUNNER` (*Settings > Secrets and
 variables > Actions > Variables*) holds a runner label, for the graysmith runners `graysmith-4cpu`. Windows
 and macOS always build on GitHub's runners. If graysmith is down, the job is never picked up and the run

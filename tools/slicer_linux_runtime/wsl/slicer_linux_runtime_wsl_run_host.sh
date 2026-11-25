@@ -88,7 +88,7 @@ append_package_extras() {
             slicer_linux_runtime_host|slicer_linux_runtime_host_abi1|slicer_linux_runtime_host_abi0|libbambu_networking.so|libBambuSource.so|linux_component_manifest.json|ca-certificates.crt|slicer_base64.cer)
                 continue
                 ;;
-            *.dll|*.ps1|*.txt|*.tar|*.zip|*.cmd|*.bat|*.sh|*.log|*.old|*.backup)
+            *.dll|*.dylib|*.ps1|*.txt|*.tar|*.zip|*.cmd|*.bat|*.sh|*.log|*.old|*.backup)
                 continue
                 ;;
         esac
@@ -205,6 +205,9 @@ if [ -d /etc/ssl/certs ]; then
     export SSL_CERT_DIR="/etc/ssl/certs"
 fi
 
+# The plug-in writes files such as log_iotc.txt into the working directory, which OrbStack keeps from the Mac side.
+cd "$CURRENT_DIR"
+
 BIN_PATH=$("$CURRENT_DIR/slicer_linux_runtime_host" --print-bin 2>/tmp/slicer-linux-runtime-bin.txt || true)
 if [ -z "$BIN_PATH" ] || [ ! -x "$BIN_PATH" ]; then
     log "failed to resolve host binary"
@@ -215,7 +218,8 @@ fi
 log "selected_bin=$BIN_PATH"
 log "runtime_files=$(list_runtime_files)"
 
-if command -v ldd >/dev/null 2>&1; then
+# ldd cannot inspect an x86-64 binary that runs through an emulator.
+if [ -z "${SLICER_LINUX_RUNTIME_EXEC_PREFIX:-}" ] && command -v ldd >/dev/null 2>&1; then
     LDD_OUT="$(ldd "$BIN_PATH" 2>&1 || true)"
     if printf '%s\n' "$LDD_OUT" | grep -q 'not found'; then
         log "ldd reported missing libraries for $BIN_PATH"

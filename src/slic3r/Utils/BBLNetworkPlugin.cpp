@@ -57,9 +57,14 @@ bool linux_runtime_preflight(const boost::filesystem::path& plugin_folder, std::
         SlicerLinuxRuntime::host_executable_file_name(),
         SlicerLinuxRuntime::host_executable_file_name() + "_abi1",
         SlicerLinuxRuntime::host_executable_file_name() + "_abi0",
+#if defined(__APPLE__)
+        SlicerLinuxRuntime::mac_orbstack_machine_file_name(),
+        SlicerLinuxRuntime::mac_runtime_install_script_file_name(),
+#else
         SlicerLinuxRuntime::windows_wsl_distro_file_name(),
         SlicerLinuxRuntime::windows_wsl_import_script_file_name(),
         SlicerLinuxRuntime::windows_wsl_validate_script_file_name(),
+#endif
         SlicerLinuxRuntime::windows_wsl_bootstrap_script_file_name(),
         SlicerLinuxRuntime::windows_wsl_rootfs_file_name(),
         SlicerLinuxRuntime::linux_component_library_name(),
