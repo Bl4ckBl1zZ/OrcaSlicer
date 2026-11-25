@@ -885,6 +885,20 @@ jobs:
           name: macos-arm64-dmg
           path: dist
 
+      # The graysmith runner image has no GitHub CLI; GitHub-hosted runners do.
+      - name: Install the GitHub CLI
+        shell: bash
+        env:
+          GH_VERSION: 2.105.0
+          GH_SHA256: 79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f
+        run: |
+          command -v gh && exit 0
+          tarball="$RUNNER_TEMP/gh.tar.gz"
+          curl -fsSL --retry 5 -o "$tarball" "https://github.com/cli/cli/releases/download/v$GH_VERSION/gh_${GH_VERSION}_linux_amd64.tar.gz"
+          echo "$GH_SHA256  $tarball" | sha256sum -c -
+          tar -xzf "$tarball" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gh_${GH_VERSION}_linux_amd64/bin" >> "$GITHUB_PATH"
+
       - name: Publish the draft release
         shell: bash
         env:
