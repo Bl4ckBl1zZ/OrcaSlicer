@@ -42,7 +42,7 @@ SetCompressorDictSize 64
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}"
 !define UNINST_EXE "Uninstall.exe"
 !define SHORTCUT "${APP_NAME}.lnk"
-!define REPO_URL "https://github.com/Bl4ckBl1zZ/OrcaSlicer-BambuBridge"
+!define REPO_URL "https://github.com/Bl4ckBl1zZ/OrcaSlicer"
 
 !include MUI2.nsh
 !include LogicLib.nsh

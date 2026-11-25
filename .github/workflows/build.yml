@@ -5,8 +5,7 @@ name: Build
 #   linux-runtime -> windows-x64 (setup .exe + portable zip) \
 #                    macos-arm64 (DMG)                        -> release (v* tags only)
 #
-# Runs on demand and for version tags only: Windows and macOS minutes are expensive in a private
-# repository. A manual run leaves the installers as artifacts of the run; a tag such as
+# Runs on demand and for version tags only, on GitHub-hosted runners. A manual run leaves the installers as artifacts of the run; a tag such as
 # v2.5.1-bambu.1 (v<version in version.inc>[-<suffix>]) publishes them as a GitHub release.
 # The dependency builds are cached; a first run from the default branch fills the caches every
 # later run (tags included) restores.
@@ -47,11 +46,7 @@ jobs:
   linux-runtime:
     name: Linux runtime (host + WSL rootfs)
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows || inputs.linux }}
-    # GitHub-hosted unless the LINUX_RUNNER repository variable names a self-hosted runner label
-    # (graysmith-4cpu). The timeout only counts once a runner has taken the job: while no runner
-    # with that label answers, the job stays queued (for up to a day) and with it the Windows
-    # build. Cancel such a run and delete the variable to go back to the GitHub-hosted runner.
-    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
