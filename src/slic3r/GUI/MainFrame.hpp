@@ -162,6 +162,8 @@ class MainFrame : public DPIFrame
     wxTimer* m_reset_title_text_colour_timer{ nullptr };
     IdleScheduler         m_idle;
     bool                  m_prebuild_started{ false };
+    // A tab request_select_tab() asked for from inside a modal loop, selected once the main loop runs.
+    wxString              m_deferred_select_tab;
     // Loads the Prepare canvas's GL resources while its page is hidden.
     class GLResourcesPrebuild : public LazyBase
     {
@@ -440,6 +442,7 @@ public:
     //BBS: GUI refactor
     void        select_tab(wxPanel* panel);
     void        select_tab(const wxString& id = wxString());
+    // Selects the tab from the event queue, or once the main loop runs again when asked from inside a modal loop.
     void        request_select_tab(const wxString& id);
     // post_init() needs the plater's canvas on screen to initialize OpenGL; this pass does not
     // build the settings page.
