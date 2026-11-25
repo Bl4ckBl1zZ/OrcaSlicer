@@ -28,6 +28,10 @@ on:
         description: Build the Linux runtime on its own (to try out a Linux runner)
         type: boolean
         default: false
+      from_run:
+        description: Build nothing; put the installers of this earlier run's id on a draft release (untick the rest)
+        type: string
+        default: ''
   push:
     tags:
       - 'v*'
@@ -854,8 +858,8 @@ jobs:
   test-build:
     name: Draft release of a manual run
     if: >-
-      ${{ always() && github.event_name == 'workflow_dispatch' &&
-      (needs.windows-x64.result == 'success' || needs.macos-arm64.result == 'success') }}
+      ${{ always() && github.event_name == 'workflow_dispatch' && (inputs.from_run != '' ||
+      needs.windows-x64.result == 'success' || needs.macos-arm64.result == 'success') }}
     needs: [windows-x64, macos-arm64]
     # Next to graysmith's artifact store when the self-hosted runner is in use.
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-24.04' }}
@@ -865,25 +869,34 @@ jobs:
       id-token: write
     steps:
       - name: Download the Windows setup
-        if: needs.windows-x64.result == 'success'
+        if: inputs.from_run != '' || needs.windows-x64.result == 'success'
+        # An earlier run may have built only one of the platforms.
+        continue-on-error: ${{ inputs.from_run != '' }}
         uses: Bl4ckBl1zZ/graysmith/download-artifact@main
         with:
           name: windows-x64-setup
           path: dist
+          run-id: ${{ inputs.from_run }}
 
       - name: Download the Windows portable zip
-        if: needs.windows-x64.result == 'success'
+        if: inputs.from_run != '' || needs.windows-x64.result == 'success'
+        # An earlier run may have built only one of the platforms.
+        continue-on-error: ${{ inputs.from_run != '' }}
         uses: Bl4ckBl1zZ/graysmith/download-artifact@main
         with:
           name: windows-x64-portable
           path: dist
+          run-id: ${{ inputs.from_run }}
 
       - name: Download the macOS DMG
-        if: needs.macos-arm64.result == 'success'
+        if: inputs.from_run != '' || needs.macos-arm64.result == 'success'
+        # An earlier run may have built only one of the platforms.
+        continue-on-error: ${{ inputs.from_run != '' }}
         uses: Bl4ckBl1zZ/graysmith/download-artifact@main
         with:
           name: macos-arm64-dmg
           path: dist
+          run-id: ${{ inputs.from_run }}
 
       # The graysmith runner image has no GitHub CLI; GitHub-hosted runners do.
       - name: Install the GitHub CLI
@@ -904,7 +917,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: build-${{ github.run_id }}
+          TAG: build-${{ inputs.from_run || github.run_id }}
         run: |
           cd dist
           ls -l
