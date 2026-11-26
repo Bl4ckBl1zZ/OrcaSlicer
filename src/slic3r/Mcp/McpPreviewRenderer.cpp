@@ -727,7 +727,7 @@ struct PreviewRenderer::Impl
         shells_print_timestamp = print->get_modified_count();
     }
 
-    void render_shells(const Matrix4d& view, const Matrix4d& proj, double near_z, double far_z, int w, int h)
+    void render_shells(const Matrix4d& view, const Matrix4d& proj, double near_z, double far_z)
     {
         if (shells.volumes.empty())
             return;
@@ -740,7 +740,7 @@ struct PreviewRenderer::Impl
         shader->set_uniform("emission_factor", 0.1f);
         shader->set_uniform("z_far", far_z);
         shader->set_uniform("z_near", near_z);
-        shells.render(GLVolumeCollection::ERenderType::Transparent, false, Transform3d(view), Transform3d(proj), { w, h });
+        shells.render(GLVolumeCollection::ERenderType::Transparent, false, Transform3d(view), Transform3d(proj));
         shader->set_uniform("emission_factor", 0.0f);
         shader->stop_using();
         glsafe(::glDepthMask(GL_TRUE));
@@ -1236,7 +1236,7 @@ PreviewImage PreviewRenderer::render(const PreviewRequest& req)
         viewer.render_translucent(vview, vproj);
 
     if (req.show_shells)
-        d.render_shells(view, proj, near_z, far_z, cam.width, cam.height);
+        d.render_shells(view, proj, near_z, far_z);
 
     std::vector<uint8_t> gl_rows;
     target->read(cam.width, cam.height, gl_rows);

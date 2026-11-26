@@ -68,6 +68,7 @@
 #include "Geometry/ConvexHull.hpp"
 #include "I18N.hpp"
 #include "LifecycleEvents.hpp"
+#include "ParallelForFirstError.hpp"
 #include "ShortestPath.hpp"
 #include "Thread.hpp"
 #include "Time.hpp"
@@ -308,6 +309,7 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
         "nozzle_height",
         "extruder_colour",
         "filament_flow_ratio",
+        "filament_max_external_volumetric_speed",
         "reduce_fan_stop_start_freq",
         "dont_slow_down_outer_wall",
         "fan_cooling_layer_time",
@@ -579,6 +581,9 @@ bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* n
             || opt_key == "travel_speed"
             || opt_key == "travel_speed_z"
             || opt_key == "initial_layer_speed"
+            || opt_key == "enable_volumetric_speeds"
+            || opt_key == "initial_layer_volumetric_flow"
+            || opt_key == "initial_layer_infill_volumetric_flow"
             || opt_key == "initial_layer_travel_speed"
             || opt_key == "initial_layer_travel_acceleration"
             || opt_key == "initial_layer_travel_jerk"
@@ -774,6 +779,10 @@ std::vector<unsigned int> Print::extruders(bool conside_custom_gcode) const
 {
     std::vector<unsigned int> extruders = this->object_extruders();
     append(extruders, this->support_material_extruders());
+    for (const PrintObject *object : m_objects)
+        if (object->config().brim_filament_id.value > 0 &&
+            ((object->has_brim() && !m_config.belt_printer.value) || object->has_belt_brim()))
+            extruders.push_back(object->config().brim_filament_id.value - 1);
 
     if (conside_custom_gcode)
         this->append_tool_change_extruders(extruders);
@@ -892,7 +901,7 @@ std::vector<size_t> Print::layers_sorted_for_object(float start, float end, std:
     return idx_of_object_sorted;
 };
 
-StringObjectException Print::sequential_print_clearance_valid(const Print &print, Polygons *polygons, std::vector<std::pair<Polygon, float>>* height_polygons)
+StringObjectException Print::sequential_print_clearance_valid(const Print &print, Polygons *polygons, std::vector<std::pair<Polygon, float>>* height_polygons, StringObjectException *warning)
 {
     StringObjectException single_object_exception;
     const auto& print_config = print.config();
@@ -904,17 +913,85 @@ StringObjectException Print::sequential_print_clearance_valid(const Print &print
         const PrintInstance *print_instance;
         BoundingBox    bounding_box;
         Polygon        hull_polygon;
-        int                  object_index;
-        double         arrange_score;
-        double               height;
+        // Place of the instance in print.model()'s object and instance lists. Copies of one object get
+        // one PrintObject per distinct transformation, so print.objects() does not list them in order.
+        std::pair<int, int>  model_position;
+        double               height; // top above the bed, raft included (PrintObject::print_z_max)
+        // Whether the instance reaches above extruder_clearance_height_to_rod, and the Y extent of it
+        // the rod can hit while a later instance prints (see above_rod_y_range).
+        bool                 has_above_rod = false;
+        coord_t              rod_min_y     = 0;
+        coord_t              rod_max_y     = 0;
     };
-    auto find_object_index = [](const Model& model, const ModelObject* obj) {
-        for (int index = 0; index < model.objects.size(); index++)
-        {
-            if (model.objects[index] == obj)
-                return index;
+    // ORCA: Y extent of an instance's geometry above the rod height, in the same coordinates as the
+    // bounding boxes below. Conservative: any triangle with a vertex above the rod contributes all
+    // three of its vertices. Modifiers, blockers and negative volumes are not printed and are skipped.
+    const double rod_height = print.config().extruder_clearance_height_to_rod.value;
+    // A skirt is a wall around the whole footprint: a draft shield as tall as the object, otherwise
+    // skirt_height layers tall. Once it can reach the rod, the rod can hit the whole footprint, not just
+    // the geometry above the rod. A max_layer_height of 0 means 0.75 x nozzle diameter, as in Slicing.cpp.
+    double max_layer_height = 0.;
+    for (size_t i = 0; i < print.config().nozzle_diameter.size(); ++i) {
+        const double h = print.config().max_layer_height.get_at(i);
+        max_layer_height = std::max(max_layer_height, h > 0. ? h : 0.75 * print.config().nozzle_diameter.get_at(i));
+    }
+    const bool skirt_reaches_rod = print.has_infinite_skirt() ||
+        (print.config().skirt_loops > 0 && print.config().skirt_height * max_layer_height > rod_height);
+    auto above_rod_y_range = [rod_height](const PrintInstance &instance, coord_t &min_y, coord_t &max_y) -> bool {
+        // Skip the mesh walk for the common case of an object whose top, raft included, doesn't reach the rod.
+        if (instance.print_object->print_z_max() <= scale_(rod_height))
+            return false;
+        // Mesh Z this far below the rod prints above it once the raft lifts the object.
+        const double rod_z = rod_height - instance.print_object->slicing_parameters().object_print_z_min;
+        double ymin = std::numeric_limits<double>::max();
+        double ymax = std::numeric_limits<double>::lowest();
+        bool   any  = false;
+        const Transform3d inst_trafo = instance.model_instance->get_transformation().get_matrix();
+        for (const ModelVolume *volume : instance.print_object->model_object()->volumes) {
+            if (!volume->is_model_part())
+                continue;
+            const Transform3d           trafo = inst_trafo * volume->get_transformation().get_matrix();
+            const indexed_triangle_set &its   = volume->mesh().its;
+            std::vector<double> ys(its.vertices.size()), zs(its.vertices.size());
+            for (size_t i = 0; i < its.vertices.size(); ++i) {
+                const Vec3d p = trafo * its.vertices[i].cast<double>();
+                ys[i] = p.y();
+                zs[i] = p.z();
+            }
+            for (const auto &f : its.indices) {
+                if (zs[f(0)] <= rod_z && zs[f(1)] <= rod_z && zs[f(2)] <= rod_z)
+                    continue;
+                for (int j = 0; j < 3; ++j) {
+                    ymin = std::min(ymin, ys[f(j)]);
+                    ymax = std::max(ymax, ys[f(j)]);
+                }
+                any = true;
+            }
         }
-        return -1;
+        if (any) {
+            min_y = scaled<coord_t>(ymin);
+            max_y = scaled<coord_t>(ymax);
+        }
+        return any;
+    };
+    // Place of an instance in print.model()'s object and instance lists, which is the order the user
+    // sees in the object list. print.objects() groups the copies of one object by transformation, so
+    // it cannot be used for this.
+    auto model_position_of = [](const Model &model, const ModelInstance *instance) {
+        const ModelObject *object = instance->get_object();
+        int object_index = -1;
+        for (int index = 0; index < int(model.objects.size()); index++)
+            if (model.objects[index] == object) {
+                object_index = index;
+                break;
+            }
+        int instance_index = -1;
+        for (int index = 0; index < int(object->instances.size()); index++)
+            if (object->instances[index] == instance) {
+                instance_index = index;
+                break;
+            }
+        return std::make_pair(object_index, instance_index);
     };
 
     auto [object_skirt_offset, _] = print.object_skirt_offset();
@@ -998,8 +1075,25 @@ StringObjectException Print::sequential_print_clearance_valid(const Print &print
                     }
                 }
                 struct print_instance_info print_info {&instance, convex_hull.bounding_box(), convex_hull};
-                print_info.height = instance.print_object->height();
-                print_info.object_index = find_object_index(print.model(), print_object->model_object());
+                print_info.height = instance.print_object->print_z_max();
+                print_info.model_position = model_position_of(print.model(), instance.model_instance);
+                print_info.has_above_rod = above_rod_y_range(instance, print_info.rod_min_y, print_info.rod_max_y);
+                const BoundingBox footprint = print_info.bounding_box.inflated(-scale_(0.5 * print.config().extruder_clearance_radius.value + object_skirt_offset));
+                if (print_info.has_above_rod && !skirt_reaches_rod) {
+                    // The other instance's footprint is grown by half of extruder_clearance_radius, but the rod
+                    // can reach as far as extruder_clearance_dist_to_rod: widen this range by the difference, then
+                    // shrink it by the same 0.1 mm tolerance the footprint test uses. Never past the footprint
+                    // itself, so plates that pass the footprint test still validate.
+                    const coord_t extra = scaled<coord_t>(std::max(0., print.config().extruder_clearance_dist_to_rod.value - 0.5 * print.config().extruder_clearance_radius.value));
+                    print_info.rod_min_y = std::max(print_info.rod_min_y + scaled<coord_t>(0.1) - extra, footprint.min.y());
+                    print_info.rod_max_y = std::min(print_info.rod_max_y - scaled<coord_t>(0.1) + extra, footprint.max.y());
+                } else {
+                    // Below the rod, or with a skirt that reaches it, test the footprint as before. On printers whose
+                    // lid clearance is lower than the rod's, overlapping a later instance is what lets an
+                    // object below the rod use the rod height instead of the lid height.
+                    print_info.rod_min_y = footprint.min.y();
+                    print_info.rod_max_y = footprint.max.y();
+                }
                 print_instance_with_bounding_box.push_back(std::move(print_info));
                 convex_hulls_other.emplace_back(std::move(convex_hull));
             }
@@ -1019,138 +1113,143 @@ StringObjectException Print::sequential_print_clearance_valid(const Print &print
     double hc2              = scale_(print.config().extruder_clearance_height_to_rod); // height to rod
     double printable_height = scale_(print.config().printable_height);
 
-#if 0 //do not sort anymore, use the order in object list
-    auto bed_points = get_bed_shape(print_config);
-    float bed_width = bed_points[1].x() - bed_points[0].x();
-    // 如果扩大以后的多边形的距离小于这个值，就需要严格保证从左到右的打印顺序，否则会撞工具头右侧
-    float unsafe_dist = scale_(print_config.extruder_clearance_max_radius.value - print_config.extruder_clearance_radius.value);
-    struct VecHash
+    // Print each instance that reaches above hc2 after every instance that overlaps that part of it in Y, keeping list
+    // order where possible. With no valid order, keep the list order so the check below reports the collision.
     {
-        size_t operator()(const Vec2i32 &n1) const
-        {
-            return std::hash<coord_t>()(int(n1(0) * 100 + 100)) + std::hash<coord_t>()(int(n1(1) * 100 + 100)) * 101;
-        }
-    };
-    std::unordered_set<Vec2i32, VecHash> left_right_pair; // pairs in this vector must strictly obey the left-right order
-    for (size_t i = 0; i < print_instance_with_bounding_box.size();i++) {
-        auto &inst         = print_instance_with_bounding_box[i];
-        inst.index         = i;
-        Point pt           = inst.bounding_box.center();
-        inst.arrange_score = pt.x() / 2 + pt.y(); // we prefer print row-by-row, so cost on x-direction is smaller
-    }
-    for (size_t i = 0; i < print_instance_with_bounding_box.size(); i++) {
-        auto &inst         = print_instance_with_bounding_box[i];
-        auto &l            = print_instance_with_bounding_box[i];
-        for (size_t j = 0; j < print_instance_with_bounding_box.size(); j++) {
-            if (j != i) {
-                auto &r        = print_instance_with_bounding_box[j];
-                auto ly1       = l.bounding_box.min.y();
-                auto ly2       = l.bounding_box.max.y();
-                auto ry1       = r.bounding_box.min.y();
-                auto ry2       = r.bounding_box.max.y();
-                auto lx1       = l.bounding_box.min.x();
-                auto rx1       = r.bounding_box.min.x();
-                auto lx2       = l.bounding_box.max.x();
-                auto rx2       = r.bounding_box.max.x();
-                auto inter_min = std::max(ly1, ry1);
-                auto inter_max = std::min(ly2, ry2);
-                auto inter_y   = inter_max - inter_min;
+        const size_t n = print_instance_with_bounding_box.size();
 
-                // 如果y方向的重合超过轮廓的膨胀量，说明两个物体在一行，应该先打左边的物体，即先比较二者的x坐标。
-                // If the overlap in the y direction exceeds the expansion of the contour, it means that the two objects are in a row and the object on the left should be hit first, that is, the x coordinates of the two should be compared first.
-                if (inter_y > scale_(0.5 * print.config().extruder_clearance_radius.value)) {
-                    if (std::max(rx1 - lx2, lx1 - rx2) < unsafe_dist) {
-                        if (lx1 > rx1) {
-                            left_right_pair.insert({j, i});
-                            BOOST_LOG_TRIVIAL(debug) << "in-a-row, print_instance " << r.print_instance->model_instance->get_object()->name << "(" << r.arrange_score << ")"
-                                                     << " -> " << l.print_instance->model_instance->get_object()->name << "(" << l.arrange_score << ")";
-                        } else {
-                            left_right_pair.insert({i, j});
-                            BOOST_LOG_TRIVIAL(debug) << "in-a-row, print_instance " << l.print_instance->model_instance->get_object()->name << "(" << l.arrange_score << ")"
-                                                     << " -> " << r.print_instance->model_instance->get_object()->name << "(" << r.arrange_score << ")";
+        // Order by place in the model's object and instance lists. Copies of one object share an object
+        // index, and print.objects() lists them grouped by transformation, so the instance index is what
+        // keeps them in their list order. No key repeats, so the sort does not depend on being stable.
+        std::vector<size_t> fallback_order(n);
+        for (size_t i = 0; i < n; ++i) fallback_order[i] = i;
+        std::sort(fallback_order.begin(), fallback_order.end(), [&](size_t l, size_t r) {
+            return print_instance_with_bounding_box[l].model_position < print_instance_with_bounding_box[r].model_position;
+        });
+
+        std::vector<size_t> list_position(n);
+        for (size_t k = 0; k < n; ++k)
+            list_position[fallback_order[k]] = k;
+        auto by_list_position = [&list_position](size_t l, size_t r) { return list_position[l] < list_position[r]; };
+
+        // Mirrors the vertical-clearance check below: the part of the potentially-too-tall instance
+        // the rod can hit (see rod_min_y) is tested against the other instance's inflated footprint,
+        // i.e. everywhere the nozzle can be while that instance prints.
+        auto overlaps_in_y = [&](size_t tall_idx, size_t other_idx) {
+            const auto &A = print_instance_with_bounding_box[tall_idx];
+            if (!A.has_above_rod)
+                return false;
+            auto &bbB = print_instance_with_bounding_box[other_idx].bounding_box;
+            auto  inter_min = std::max(A.rod_min_y, bbB.min.y());
+            auto  inter_max = std::min(A.rod_max_y, bbB.max.y());
+            return inter_max - inter_min > 0;
+        };
+
+        std::vector<size_t> must_be_last;
+        for (size_t i = 0; i < n; ++i)
+            if (print_instance_with_bounding_box[i].height > hc1)
+                must_be_last.push_back(i);
+
+        bool solved = false;
+        std::vector<size_t> solved_order;
+
+        if (must_be_last.size() <= 1) {
+            size_t last_idx = must_be_last.empty() ? size_t(-1) : must_be_last.front();
+
+            // Edge b -> a means "b must be scheduled before a".
+            std::vector<std::vector<size_t>> adj(n);
+            std::vector<int> indegree(n, 0);
+            bool infeasible = false;
+            for (size_t a = 0; a < n && !infeasible; ++a) {
+                if (a == last_idx) continue;
+                if (!print_instance_with_bounding_box[a].has_above_rod) continue; // nothing reaches the rod: no constraint
+                for (size_t b = 0; b < n; ++b) {
+                    if (b == a) continue;
+                    if (!overlaps_in_y(a, b)) continue;
+                    if (b == last_idx) {
+                        // 'a' can't tolerate the last-placed instance printing after it while
+                        // overlapping it, and the last instance can't be moved earlier by
+                        // definition (nothing else may be scheduled after it) -> unsolvable.
+                        infeasible = true;
+                        break;
+                    }
+                    adj[b].push_back(a);
+                    indegree[a]++;
+                }
+            }
+
+            if (!infeasible) {
+                // Kahn's algorithm; ties are broken by place in the list so the result is
+                // the minimal perturbation of the incoming order, not an arbitrary one.
+                std::vector<size_t> ready;
+                for (size_t i = 0; i < n; ++i)
+                    if (i != last_idx && indegree[i] == 0)
+                        ready.push_back(i);
+                std::sort(ready.begin(), ready.end(), by_list_position);
+
+                std::vector<size_t> order;
+                order.reserve(n);
+                while (!ready.empty()) {
+                    size_t cur = ready.front();
+                    ready.erase(ready.begin());
+                    order.push_back(cur);
+                    for (size_t nxt : adj[cur]) {
+                        if (--indegree[nxt] == 0) {
+                            auto pos = std::upper_bound(ready.begin(), ready.end(), nxt, by_list_position);
+                            ready.insert(pos, nxt);
                         }
                     }
                 }
-                if (l.height > hc1 && r.height < hc1) {
-                    // 当前物体超过了顶盖高度，必须后打
-                    left_right_pair.insert({j, i});
-                    BOOST_LOG_TRIVIAL(debug) << "height>hc1, print_instance " << r.print_instance->model_instance->get_object()->name << "(" << r.arrange_score << ")"
-                                             << " -> " << l.print_instance->model_instance->get_object()->name << "(" << l.arrange_score << ")";
+
+                if (last_idx != size_t(-1))
+                    order.push_back(last_idx);
+
+                if (order.size() == n) {
+                    solved = true;
+                    solved_order = std::move(order);
                 }
-                else if (l.height > hc2 && l.height > r.height && l.arrange_score<r.arrange_score) {
-                    // 如果当前物体的高度超过滑杆，且比r高，就给它加一点代价，尽量让高的物体后打（只有物体高度超过滑杆时才有必要按高度来）
-                    if (l.arrange_score < r.arrange_score)
-                        l.arrange_score = r.arrange_score + 10;
-                    BOOST_LOG_TRIVIAL(debug) << "height>hc2, print_instance " << inst.print_instance->model_instance->get_object()->name
-                                             << ", right=" << r.print_instance->model_instance->get_object()->name << ", l.score: " << l.arrange_score
-                                             << ", r.score: " << r.arrange_score;
-                }
+                // else: a cycle among mutually Y-overlapping, over-hc2 instances -> genuinely
+                // unsolvable; fall through to the fallback order below.
             }
         }
+        // else: more than one instance requires the single "last" slot -> genuinely unsolvable.
+
+        // In By Object mode the object list is the print order the user set, so say when the print
+        // differs from it, naming the instances held back to clear the rod: those printed later than
+        // their place in the list. The first of them is the jump target.
+        if (warning != nullptr && solved && solved_order != fallback_order) {
+            for (size_t k = 0; k < n; ++k) {
+                if (k <= list_position[solved_order[k]])
+                    continue;
+                const ModelInstance *held_back = print_instance_with_bounding_box[solved_order[k]].print_instance->model_instance;
+                const std::string    line      = (boost::format(L("%1% is printed later than its place in the object list, to avoid a collision.")) % held_back->get_object()->name).str();
+                if (warning->string.empty()) {
+                    warning->string = line;
+                    // ORCA: Pass ModelInstance instead of ModelObject, so the notification can jump to it
+                    warning->object = held_back;
+                } else
+                    warning->string += "\n" + line;
+            }
+            warning->is_warning = true;
+        }
+
+        {
+            std::vector<print_instance_info> reordered;
+            reordered.reserve(n);
+            for (size_t idx : (solved ? solved_order : fallback_order))
+                reordered.emplace_back(print_instance_with_bounding_box[idx]);
+            print_instance_with_bounding_box = std::move(reordered);
+        }
+
+        for (auto &inst : print_instance_with_bounding_box)
+            BOOST_LOG_TRIVIAL(debug) << "after sequential-print ordering, print_instance "
+                                     << inst.print_instance->model_instance->get_object()->name
+                                     << ", model_position: " << inst.model_position.first << "/" << inst.model_position.second
+                                     << ", height: " << inst.height
+                                     << (solved ? " [reordered for clearance]" : " [object-list order]");
     }
-    // 多做几次代价传播，因为前一次有些值没有更新。
-    // TODO 更好的办法是建立一颗树，一步到位。不过我暂时没精力搞，先就这样吧
-    for (int k=0;k<5;k++)
-    for (auto p : left_right_pair) {
-        auto &l = print_instance_with_bounding_box[p(0)];
-        auto &r = print_instance_with_bounding_box[p(1)];
-        if(r.arrange_score<l.arrange_score)
-            r.arrange_score = l.arrange_score + 10;
-    }
-
-    BOOST_LOG_TRIVIAL(debug) << "bed width: " << unscale_(bed_width) << ", unsafe_dist:" << unscale_(unsafe_dist) << ", height_to_lid: " << unscale_(hc1) << ", height_to_rod:" << unscale_(hc2) << ", final dependency:";
-    for (auto p : left_right_pair) {
-        auto &l         = print_instance_with_bounding_box[p(0)];
-        auto &r         = print_instance_with_bounding_box[p(1)];
-        BOOST_LOG_TRIVIAL(debug) << "print_instance " << I18N::translate(l.print_instance->model_instance->get_object()->name) << "(" << l.arrange_score << ")"
-                                 << " -> " << I18N::translate(r.print_instance->model_instance->get_object()->name) << "(" << r.arrange_score << ")";
-    }
-    // sort the print instance
-    std::sort(print_instance_with_bounding_box.begin(), print_instance_with_bounding_box.end(),
-        [](print_instance_info& l, print_instance_info& r) {return l.arrange_score < r.arrange_score;});
-
-    for (auto &inst : print_instance_with_bounding_box)
-        BOOST_LOG_TRIVIAL(debug) << "after sorting print_instance " << inst.print_instance->model_instance->get_object()->name << ", score: " << inst.arrange_score
-                                 << ", height:"<< inst.height;
-#else
-    // sort the print instance
-    std::sort(print_instance_with_bounding_box.begin(), print_instance_with_bounding_box.end(),
-        [](print_instance_info& l, print_instance_info& r) {return l.object_index < r.object_index;});
-
-    for (auto &inst : print_instance_with_bounding_box)
-        BOOST_LOG_TRIVIAL(debug) << "after sorting print_instance " << inst.print_instance->model_instance->get_object()->name << ", object_index: " << inst.object_index
-                                 << ", height:"<< inst.height;
-
-#endif
     // sequential_print_vertical_clearance_valid
     {
-        // Ignore the last instance printed.
-        //print_instance_with_bounding_box.pop_back();
-        /*bool has_interlaced_objects = false;
-        for (int k = 0; k < print_instance_count; k++)
-        {
-            auto inst = print_instance_with_bounding_box[k].print_instance;
-            auto bbox = print_instance_with_bounding_box[k].bounding_box;
-            auto iy1 = bbox.min.y();
-            auto iy2 = bbox.max.y();
-
-            for (int i = 0; i < k; i++)
-            {
-                auto& p = print_instance_with_bounding_box[i].print_instance;
-                auto bbox2 = print_instance_with_bounding_box[i].bounding_box;
-                auto py1 = bbox2.min.y();
-                auto py2 = bbox2.max.y();
-                auto inter_min = std::max(iy1, py1); // min y of intersection
-                auto inter_max = std::min(iy2, py2); // max y of intersection. length=max_y-min_y>0 means intersection exists
-                if (inter_max - inter_min > 0) {
-                    has_interlaced_objects = true;
-                    break;
-                }
-            }
-            if (has_interlaced_objects)
-                break;
-        }*/
-
         // if objects are not overlapped on y-axis, they will not collide even if they are taller than extruder_clearance_height_to_rod
         int print_instance_count = print_instance_with_bounding_box.size();
         std::map<const PrintInstance*, std::pair<Polygon, float>> too_tall_instances;
@@ -1159,21 +1258,12 @@ StringObjectException Print::sequential_print_clearance_valid(const Print &print
             auto inst = print_instance_with_bounding_box[k].print_instance;
             // 只需要考虑喷嘴到滑杆的偏移量，这个比整个工具头的碰撞半径要小得多
             // Only the offset from the nozzle to the slide bar needs to be considered, which is much smaller than the collision radius of the entire tool head.
-            auto bbox = print_instance_with_bounding_box[k].bounding_box.inflated(-scale_(0.5 * print.config().extruder_clearance_radius.value + object_skirt_offset));
-            auto iy1 = bbox.min.y();
-            auto iy2 = bbox.max.y();
+            // ORCA: test only the part of this instance the rod can hit (see rod_min_y).
+            const auto &info_k = print_instance_with_bounding_box[k];
+            const coord_t iy1 = info_k.rod_min_y;
+            const coord_t iy2 = info_k.rod_max_y;
             (const_cast<ModelInstance*>(inst->model_instance))->arrange_order = k+1;
             double height = (k == (print_instance_count - 1))?printable_height:hc1;
-            /*if (has_interlaced_objects) {
-                if ((k < (print_instance_count - 1)) && (inst->print_object->height() > hc2)) {
-                    too_tall_instances[inst] = std::make_pair(print_instance_with_bounding_box[k].hull_polygon, unscaled<double>(hc2));
-                }
-            }
-            else {
-                if ((k < (print_instance_count - 1)) && (inst->print_object->height() > hc1)) {
-                    too_tall_instances[inst] = std::make_pair(print_instance_with_bounding_box[k].hull_polygon, unscaled<double>(hc1));
-                }
-            }*/
 
             for (int i = k+1; i < print_instance_count; i++)
             {
@@ -1188,7 +1278,7 @@ StringObjectException Print::sequential_print_clearance_valid(const Print &print
                     break;
                 }
             }
-            if (height < inst->print_object->max_z())
+            if (height < info_k.height)
                 too_tall_instances[inst] = std::make_pair(print_instance_with_bounding_box[k].hull_polygon, unscaled<double>(height));
         }
 
@@ -1445,7 +1535,7 @@ StringObjectException Print::compacted_wipe_tower_clearance_valid(const Print &p
     Polygons              offenders;
     bool                  body_tier_used = false;
     for (const PrintObject *object : print.objects()) {
-        const double object_top = unscaled<double>(object->max_z());
+        const double object_top = unscaled<double>(object->print_z_max());
         for (const PrintInstance &instance : object->instances()) {
             const Polygon inst_hull = compacted_tower_print_instance_hull(*object, instance);
             if (inst_hull.points.empty())
@@ -1559,7 +1649,7 @@ void Print::validate_compacted_wipe_tower_clearance() const
         return;
 
     for (const PrintObject *object : m_objects) {
-        const double object_top = unscaled<double>(object->max_z());
+        const double object_top = unscaled<double>(object->print_z_max());
         for (const PrintInstance &instance : object->instances()) {
             const Polygon inst_hull = compacted_tower_print_instance_hull(*object, instance);
             if (inst_hull.points.empty())
@@ -1875,6 +1965,8 @@ StringObjectException Print::check_multi_filament_valid(const Print& print)
                 if (print_object->config().support_interface_filament >= 1 && (unsigned int)print_object->config().support_interface_filament < num_extruders + 1)
                     obj_used_extruder_ids.insert((unsigned int) print_object->config().support_interface_filament - 1);
             }
+            if (print_object->has_brim() && print_object->config().brim_filament_id.value > 0)
+                obj_used_extruder_ids.insert(print_object->config().brim_filament_id.value - 1);
             std::vector<std::string> filament_types;
             std::vector<int> nozzle_temperatures;
             std::vector<int> nozzle_temperature_range_lows;
@@ -2025,26 +2117,21 @@ StringObjectException Print::validate_wipe_tower_layering() const
         layer_z_series.assign(m_objects.size(), std::vector<coordf_t>());
 
         for (size_t idx_object = 0; idx_object < m_objects.size(); ++idx_object) {
-            layer_z_series[idx_object] = generate_object_layers(m_objects[idx_object]->slicing_parameters(), layer_height_profile(idx_object), m_objects[idx_object]->config().precise_z_height.value);
+            layer_z_series[idx_object] = generate_object_layers(m_objects[idx_object]->slicing_parameters(), layer_height_profile(idx_object), m_objects[idx_object]->precise_z_height());
         }
 
         for (size_t idx_object = 0; idx_object < m_objects.size(); ++idx_object) {
             if (idx_object == tallest_object_idx) continue;
-            // Check that the layer height profiles are equal. This will happen when one object is
-            // a copy of another, or when a layer height modifier is used the same way on both objects.
-            // The latter case might create a floating point inaccuracy mismatch, so compare
-            // element-wise using an epsilon check.
-            size_t         i   = 0;
+            // Orca: check that the objects are sliced at the same Z over the height they share. The
+            // profiles themselves cannot be compared: one that ends at a lower object's top has an
+            // entry there that the tallest object's profile lacks, though both give the same layers.
+            const std::vector<coordf_t> &layers         = layer_z_series[idx_object];
+            const std::vector<coordf_t> &layers_tallest = layer_z_series[tallest_object_idx];
             const coordf_t eps = 0.5 * EPSILON; // layers closer than EPSILON will be merged later. Let's make
             // this check a bit more sensitive to make sure we never consider two different layers as one.
-            while (i < layer_height_profiles[idx_object].size() && i < layer_height_profiles[tallest_object_idx].size()) {
-                // BBS: remove the break condition, because a variable layer height object and a new object will not be checked when slicing
-                //if (i % 2 == 0 && layer_height_profiles[tallest_object_idx][i] > layer_height_profiles[idx_object][layer_height_profiles[idx_object].size() - 2])
-                //    break;
-                if (std::abs(layer_height_profiles[idx_object][i] - layer_height_profiles[tallest_object_idx][i]) > eps)
+            for (size_t i = 0; i < layers.size() && i < layers_tallest.size(); ++i)
+                if (std::abs(layers[i] - layers_tallest[i]) > eps)
                     return {L("The prime tower is only supported if all objects have the same variable layer height.")};
-                ++i;
-            }
         }
     }
     return {};
@@ -2343,11 +2430,14 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
         }
 
         //BBS: refine seq-print validation logic
-        auto ret = sequential_print_clearance_valid(*this, collison_polygons, height_polygons);
+        StringObjectException order_warning;
+        auto ret = sequential_print_clearance_valid(*this, collison_polygons, height_polygons, &order_warning);
         if (!ret.string.empty()) {
             ret.type = STRING_EXCEPT_OBJECT_COLLISION_IN_SEQ_PRINT;
             return ret;
         }
+        if (!order_warning.string.empty())
+            add_warning(order_warning);
     }
     else {
         //BBS
@@ -2405,7 +2495,10 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
             return {L("The project contains multiple managed belt purge towers. Reload the plate or toggle the belt purge tower off and on to regenerate it.")};
     }
 
-    if (m_config.enable_prime_tower) {
+    if (m_precise_z_height_overridden)
+        // TRN "Precise Z height" is a print setting, "prime tower" the tower that purges the nozzle between filaments.
+        warn(L("Precise Z height is not applied: with the prime tower, objects of different heights that use variable layer height have to share their layers."), "precise_z_height");
+    else if (m_config.enable_prime_tower) {
         for (const PrintObject* object : m_objects) {
             if (object->config().precise_z_height.value) {
                 warn(L("Enabling both precise Z height and the prime tower may cause slicing errors."), "precise_z_height");
@@ -2428,14 +2521,65 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
         // spiral vase cannot print.
         const auto &is_mixed = m_config.filament_is_mixed.values;
         for (const PrintObject *object : m_objects) {
-            const auto used_filament_ids = object->object_extruders();
+            auto used_filament_ids = object->object_extruders();
+            // Painted all over, the object prints only its painted filaments, unless the segmented region
+            // max width or interlocking depth limits the paint to a band and fills the rest with its own filament.
+            // Beam interlocking turns that band off.
+            const PrintObjectConfig &object_config = object->config();
+            const ModelVolumePtrs   &volumes       = object->model_object()->volumes;
+            if ((object_config.interlocking_beam.value ||
+                 (object_config.mmu_segmented_region_max_width.value == 0. &&
+                  object_config.mmu_segmented_region_interlocking_depth.value == 0.)) &&
+                std::all_of(volumes.begin(), volumes.end(), [](const ModelVolume *volume) {
+                    return !volume->is_model_part() || volume->is_mm_painted_everywhere();
+                })) {
+                used_filament_ids.clear();
+                for (const ModelVolume *volume : volumes)
+                    if (volume->is_model_part())
+                        for (size_t filament_id : volume->get_extruders_from_multi_material_painting())
+                            used_filament_ids.push_back(static_cast<unsigned int>(filament_id));
+                sort_remove_duplicates(used_filament_ids);
+            }
             if (used_filament_ids.size() > 1 ||
                 std::any_of(used_filament_ids.begin(), used_filament_ids.end(), [&is_mixed](unsigned int filament_id) {
                     return filament_id < is_mixed.size() && is_mixed[filament_id];
                 }))
                 return {L("Spiral (vase) mode does not work when an object contains more than one material."), nullptr, "spiral_mode"};
+            // Enabling spiral vase mode in the GUI resets these keys in the global config only, so an object,
+            // part or height range can still override them. Layers with infill or more than one wall are
+            // printed without spiralizing.
+            for (const PrintRegion &region : object->all_regions()) {
+                const PrintRegionConfig &cfg = region.config();
+                const char *opt_key = cfg.sparse_infill_density.value > 0. ? "sparse_infill_density" :
+                                      cfg.wall_loops.value > 1             ? "wall_loops" :
+                                      cfg.top_shell_layers.value > 0       ? "top_shell_layers" : nullptr;
+                if (opt_key != nullptr) {
+                    // TRN %1% is the object name.
+                    warn(Slic3r::format(_u8L("Spiral vase mode needs no sparse infill, one wall loop and no top shell layers, "
+                                             "but the object %1% uses other values, so it will not print as a continuous spiral."),
+                                        object->model_object()->name),
+                         opt_key, object);
+                    break;
+                }
+            }
         }
     }
+
+    for (const PrintObject *object : m_objects)
+        for (const PrintRegion &region : object->all_regions()) {
+            const PrintRegionConfig &cfg = region.config();
+            if (cfg.sparse_infill_strategy.value == InfillStrategy::Crossing && cfg.fill_multiline.value > 3 &&
+                has_infill_strategy(cfg.sparse_infill_pattern.value) && cfg.sparse_infill_density.value > 0. &&
+                cfg.sparse_infill_density.value < 100.) {
+                // TRN %1% is the object name.
+                warn(Slic3r::format(_u8L("The sparse infill of the object %1% uses the Crossing strategy with more than 3 lines. "
+                                         "Its walls overlap over a large area at every crossing, which can over-extrude there "
+                                         "and make the nozzle scrape the infill. Use the Non-crossing strategy or fewer lines."),
+                                    object->model_object()->name),
+                     "sparse_infill_strategy", object);
+                break;
+            }
+        }
 
     // Cache of layer height profiles for checking:
     // 1) Whether all layers are synchronized if printing with wipe tower and / or unsynchronized supports.
@@ -2474,7 +2618,7 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
             have_height     = raw_z > 0;
         } else {
             //FIXME It is quite expensive to generate object layers just to get the print height!
-            auto layers = generate_object_layers(print_object.slicing_parameters(), layer_height_profile(print_object_idx), print_object.config().precise_z_height.value);
+            auto layers = generate_object_layers(print_object.slicing_parameters(), layer_height_profile(print_object_idx), print_object.precise_z_height());
             if (!layers.empty()) {
                 // The object layers start above the raft.
                 const double raft_z  = print_object.slicing_parameters().object_print_z_min;
@@ -2522,6 +2666,12 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
                 if (! check_object_layers_fixed(print_object.slicing_parameters(), layers))
                     return {_u8L("Variable layer height is not supported with Organic supports.") };
         }
+
+    // The brim filament is a physical tool. The GUI hides mixed slots from the option; this guards loaded projects and the CLI.
+    for (const PrintObject *object : m_objects)
+        if (const int brim_filament = object->config().brim_filament_id.value; brim_filament > 0 &&
+            size_t(brim_filament - 1) < m_config.filament_is_mixed.values.size() && m_config.filament_is_mixed.values[brim_filament - 1])
+            return { L("The brim filament cannot be a mixed filament."), object, "brim_filament_id" };
 
     if ((this->has_wipe_tower() || this->has_belt_purge_tower()) && ! m_objects.empty()) {
         // Orca: wipe_tower_filament (issue #10971) is inserted into the tool order after
@@ -2728,10 +2878,16 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
                 if (!validate_extrusion_width(object->config(), "support_line_width", layer_height, err_msg))
                     return {err_msg, object, "support_line_width"};
             }
-            for (const char *opt_key : { "inner_wall_line_width", "outer_wall_line_width", "sparse_infill_line_width", "internal_solid_infill_line_width", "top_surface_line_width","skin_infill_line_width" ,"skeleton_infill_line_width"})
+            for (const char *opt_key : { "inner_wall_line_width", "outer_wall_line_width", "sparse_infill_line_width", "internal_solid_infill_line_width", "top_surface_line_width"})
 				for (const PrintRegion &region : object->all_regions())
                     if (!validate_extrusion_width(region.config(), opt_key, layer_height, err_msg))
 		            	return  {err_msg, object, opt_key};
+            // Only the Locked Zag sparse infill prints skin and skeleton lines.
+            for (const PrintRegion &region : object->all_regions())
+                if (region.config().sparse_infill_pattern == ipLockedZag)
+                    for (const char *opt_key : { "skin_infill_line_width", "skeleton_infill_line_width" })
+                        if (!validate_extrusion_width(region.config(), opt_key, layer_height, err_msg))
+                            return {err_msg, object, opt_key};
 
             const bool allow_thin_bridge_width = object->config().thick_bridges && object->config().thick_internal_bridges;
             for (const PrintRegion &region : object->all_regions()) {
@@ -2745,7 +2901,8 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
                         err_msg = L("Bridge line width must not exceed nozzle diameter");
                         return { err_msg, object, "bridge_line_width" };
                     }
-                    if (!allow_thin_bridge_width && bridge_width <= layer_height) {
+                    // A bridge as wide as the layer is tall is a round strand, the same as a thick bridge.
+                    if (!allow_thin_bridge_width && bridge_width < layer_height) {
                         err_msg = L("Line width too small");
                         return { err_msg, object, "bridge_line_width" };
                     }
@@ -3018,10 +3175,12 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
                              "adaptive_pressure_advance_model");
                         break;
                     }
-                    if (!AdaptivePAProcessor::validate_adaptive_pa_model(pa_model).empty()) {
-                        warn(L("The Adaptive Pressure Advance model for one or more extruders may contain invalid values."),
+                    const std::string pa_error = AdaptivePAProcessor::validate_adaptive_pa_model(pa_model);
+                    if (!pa_error.empty()) {
+                        // TRN %1% is the filament number as shown in the filament list, starting from 1; %2% names the invalid line.
+                        // one warning per filament, the notifications stack
+                        warn(Slic3r::format(L("The Adaptive Pressure Advance model of filament %1% contains invalid values.\n%2%"), filament_id + 1, pa_error),
                              "adaptive_pressure_advance_model");
-                        break;
                     }
                 }
             }
@@ -3112,11 +3271,12 @@ Flow Print::brim_flow() const
        extruders and take the one with, say, the smallest index.
        The same logic should be applied to the code that selects the extruder during G-code
        generation as well. */
+    const int brim_filament = m_objects.front()->config().brim_filament_id.value;
     return Flow::new_from_config_width(
         frPerimeter,
         // Flow::new_from_config_width takes care of the percent to value substitution
 		width,
-        (float)nozzle_diameter_for_filament(m_config, m_print_regions.front()->config().outer_wall_filament_id, this->is_BBL_printer()),
+        (float)nozzle_diameter_for_filament(m_config, brim_filament > 0 ? brim_filament : m_print_regions.front()->config().outer_wall_filament_id.value, this->is_BBL_printer()),
 		(float)this->skirt_first_layer_height());
 }
 
@@ -3276,8 +3436,11 @@ BoundingBox PrintObject::get_first_layer_bbox(float& a, float& layer_height, std
 std::map<ObjectID, unsigned int> getObjectExtruderMap(const Print& print) {
     std::map<ObjectID, unsigned int> objectExtruderMap;
     for (const PrintObject* object : print.objects()) {
+        if (object->config().brim_filament_id.value > 0) {
+            objectExtruderMap.insert(std::make_pair(object->id(), (unsigned int)object->config().brim_filament_id.value));
+        }
         // BBS
-        if (object->object_first_layer_wall_extruders.empty()){
+        else if (object->object_first_layer_wall_extruders.empty()){
             unsigned int objectFirstLayerFirstExtruder = print.config().filament_diameter.size();
             auto firstLayerRegions = object->layers().front()->regions();
             if (!firstLayerRegions.empty()) {
@@ -3383,6 +3546,9 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                 return false;
             if (!model_volume1.fuzzy_skin_facets.equals(model_volume2.fuzzy_skin_facets))
                 return false;
+            if (!model_volume1.painted_modifier_facets.equals(model_volume2.painted_modifier_facets) ||
+                model_volume1.painted_modifier_depth != model_volume2.painted_modifier_depth)
+                return false;
             if (model_volume1.config.get() != model_volume2.config.get())
                 return false;
         }
@@ -3462,16 +3628,37 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": total object counts %1% in current print, need to slice %2%")%m_objects.size()%need_slicing_objects.size();
     BOOST_LOG_TRIVIAL(info) << "Starting the slicing process." << log_memory_info();
+    // Runs a step on the objects `needs` selects and `skip` on the others. A step of an object reads that object and
+    // the print's configuration only, which the support step has always relied on, so the objects run the step
+    // together: one after another, each object's serial parts and slowest layers kept most of the cores idle.
+    // A slicing pipeline plugin runs its hook between the objects, so with one active they keep their order.
+    // Nothing enforces that rule. In particular, the PrintObjects made from one ModelObject, one per distinct instance
+    // transformation, share its ModelVolumes, whose lazily filled caches are not guarded: a step must not fill them
+    // (ModelVolume::is_splittable() is the exception, under a lock).
+    auto for_each_object_step = [this](auto &&needs, auto &&process, auto &&skip) {
+        std::vector<PrintObject*> objects;
+        for (PrintObject *obj : m_objects)
+            if (! needs(obj))
+                skip(obj);
+            else if (m_pipeline_plugin_active)
+                process(obj);
+            else
+                objects.push_back(obj);
+        if (objects.size() == 1)
+            process(objects.front());
+        else if (objects.size() > 1)
+            parallel_for_first_error(objects.size(), 1, [&process, &objects](size_t i) { process(objects[i]); });
+    };
     if (!use_cache) {
         // Fire the SlicingPipeline hook for `obj` iff it just (re)computed `pstep` this pass.
         auto hook_after = [this](PrintObject* obj, bool was_done, PrintObjectStep pstep, SlicingPipelineStepPlugin sstep) {
             if (m_pipeline_plugin_active && !was_done && obj->is_step_done(pstep))
                 run_pipeline_hook(sstep, obj);
         };
+        auto needs_slicing = [&need_slicing_objects](PrintObject *obj) { return need_slicing_objects.count(obj) != 0; };
 
         // SlicingPipeline: dedicated slice loop so the Slice boundary is hookable before perimeters.
-        for (PrintObject *obj : m_objects) {
-            if (need_slicing_objects.count(obj) != 0) {
+        for_each_object_step(needs_slicing, [&](PrintObject *obj) {
                 const bool was_done = obj->is_step_done(posSlice);
                 obj->slice();
                 hook_after(obj, was_done, posSlice, SlicingPipelineStepPlugin::posSlice);
@@ -3486,32 +3673,25 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                 if (m_pipeline_plugin_active && !was_done && obj->is_step_done(posSlice))
                     for (Layer *layer : obj->layers())
                         layer->backup_untyped_slices();
-            } else {
+            }, [](PrintObject *obj) {
                 if (obj->set_started(posSlice)) obj->set_done(posSlice);   // shared/duplicate — no hook
-            }
-        }
-        for (PrintObject *obj : m_objects) {
-            if (need_slicing_objects.count(obj) != 0) {
+            });
+        for_each_object_step(needs_slicing, [&](PrintObject *obj) {
                 const bool was_done = obj->is_step_done(posPerimeters);
                 obj->make_perimeters();   // slice() inside is a no-op: posSlice already DONE
                 hook_after(obj, was_done, posPerimeters, SlicingPipelineStepPlugin::posPerimeters);
-            } else {
+            }, [](PrintObject *obj) {
                 if (obj->set_started(posPerimeters)) obj->set_done(posPerimeters);
-            }
-        }
-        for (PrintObject *obj : m_objects) {
-            if (need_slicing_objects.count(obj) != 0) {
+            });
+        for_each_object_step(needs_slicing, [&](PrintObject *obj) {
                 const bool was_done = obj->is_step_done(posEstimateCurledExtrusions);
                 obj->estimate_curled_extrusions();
                 hook_after(obj, was_done, posEstimateCurledExtrusions, SlicingPipelineStepPlugin::posEstimateCurledExtrusions);
-            }
-            else {
+            }, [](PrintObject *obj) {
                 if (obj->set_started(posEstimateCurledExtrusions))
                     obj->set_done(posEstimateCurledExtrusions);
-            }
-        }
-        for (PrintObject *obj : m_objects) {
-            if (need_slicing_objects.count(obj) != 0) {
+            });
+        for_each_object_step(needs_slicing, [&](PrintObject *obj) {
                 // split prepare_infill (fill-surface prep) from infill (make_fills) so a
                 // plugin can mutate fill surfaces at the PrepareInfill seam and have make_fills
                 // consume them (unlike the Infill seam, which fires after the fills are already
@@ -3523,25 +3703,20 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                 const bool was_done = obj->is_step_done(posInfill);
                 obj->infill();
                 hook_after(obj, was_done, posInfill, SlicingPipelineStepPlugin::posInfill);
-            }
-            else {
+            }, [](PrintObject *obj) {
                 if (obj->set_started(posPrepareInfill))
                     obj->set_done(posPrepareInfill);
                 if (obj->set_started(posInfill))
                     obj->set_done(posInfill);
-            }
-        }
-        for (PrintObject *obj : m_objects) {
-            if (need_slicing_objects.count(obj) != 0) {
+            });
+        for_each_object_step(needs_slicing, [&](PrintObject *obj) {
                 const bool was_done = obj->is_step_done(posIroning);
                 obj->ironing();
                 hook_after(obj, was_done, posIroning, SlicingPipelineStepPlugin::posIroning);
-            }
-            else {
+            }, [](PrintObject *obj) {
                 if (obj->set_started(posIroning))
                     obj->set_done(posIroning);
-            }
-        }
+            });
 
         // Z-Contouring
         for (PrintObject *obj : m_objects) {
@@ -3589,17 +3764,14 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                     && m_objects[i]->is_step_done(posSupportMaterial))
                     run_pipeline_hook(SlicingPipelineStepPlugin::posSupportMaterial, m_objects[i]);
 
-        for (PrintObject* obj : m_objects) {
-            if (need_slicing_objects.count(obj) != 0) {
+        for_each_object_step(needs_slicing, [&](PrintObject *obj) {
                 const bool was_done = obj->is_step_done(posDetectOverhangsForLift);
                 obj->detect_overhangs_for_lift();
                 hook_after(obj, was_done, posDetectOverhangsForLift, SlicingPipelineStepPlugin::posDetectOverhangsForLift);
-            }
-            else {
+            }, [](PrintObject *obj) {
                 if (obj->set_started(posDetectOverhangsForLift))
                     obj->set_done(posDetectOverhangsForLift);
-            }
-        }
+            });
     }
     else {
         for (PrintObject *obj : m_objects) {
@@ -3964,9 +4136,9 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
         }
     }
     //BBS
-    for (PrintObject *obj : m_objects) {
-        if (((!use_cache)&&(need_slicing_objects.count(obj) != 0))
-            || (use_cache &&(re_slicing_objects.count(obj) != 0))){
+    for_each_object_step([&](PrintObject *obj) {
+            return (!use_cache && need_slicing_objects.count(obj) != 0) || (use_cache && re_slicing_objects.count(obj) != 0);
+        }, [&](PrintObject *obj) {
             const bool was_done = obj->is_step_done(posSimplifyPath);
             obj->simplify_extrusion_path();
             // Unlike every other seam (all inside the `if (!use_cache)` block above), this loop is
@@ -3974,16 +4146,14 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
             // explicitly here to keep hooks from ever firing on cache-loaded (plugin-final) objects.
             if (!use_cache && m_pipeline_plugin_active && !was_done && obj->is_step_done(posSimplifyPath))
                 run_pipeline_hook(SlicingPipelineStepPlugin::posSimplifyPath, obj);
-        }
-        else {
+        }, [](PrintObject *obj) {
             if (obj->set_started(posSimplifyPath))
                 obj->set_done(posSimplifyPath);
             if (obj->set_started(posSimplifyInfill))
                 obj->set_done(posSimplifyInfill);
             if (obj->set_started(posSimplifySupportPath))
                 obj->set_done(posSimplifySupportPath);
-        }
-    }
+        });
 
     // BBS
     bool has_adaptive_layer_height = false;
@@ -4369,6 +4539,11 @@ void Print::_make_skirt()
             auto compatible_brim_nozzles =
                 [this, &brim_filament, &brim_exclusion_regions, has_nozzle_specific_brim_exclusions]
                 (const ObjectInstanceID& first, const ObjectInstanceID& second) {
+                    // A brim with a chosen filament is only combined with brims chosen the same.
+                    const int first_chosen  = get_object(first.object_id)->config().brim_filament_id.value;
+                    const int second_chosen = get_object(second.object_id)->config().brim_filament_id.value;
+                    if (first_chosen > 0 || second_chosen > 0)
+                        return first_chosen == second_chosen;
                     if (!has_nozzle_specific_brim_exclusions)
                         return true;
                     const std::optional<unsigned int> first_filament = brim_filament(first);
@@ -5291,6 +5466,9 @@ bool Print::enable_timelapse_print() const
 
 void Print::_make_wipe_tower()
 {
+    // Use the printer's G-code tag format so the processor can classify wipe tower filament usage.
+    GCodeProcessor::s_IsBBLPrinter = is_BBL_printer();
+
     m_wipe_tower_data.clear();
 
     // BBS
@@ -5904,6 +6082,7 @@ DynamicConfig PrintStatistics::config() const
     config.set_key_value("initial_tool",              new ConfigOptionInt(static_cast<int>(this->initial_tool)));
     config.set_key_value("initial_extruder",          new ConfigOptionInt(static_cast<int>(this->initial_tool)));
     config.set_key_value("initial_no_support_extruder", new ConfigOptionInt(static_cast<int>(this->initial_no_support_tool)));
+    config.set_key_value("printing_filament_types",   new ConfigOptionString(this->printing_filament_types));
     return config;
 }
 
@@ -5913,7 +6092,8 @@ DynamicConfig PrintStatistics::placeholders()
     for (const std::string key : {
         "print_time", "normal_print_time", "silent_print_time",
         "used_filament", "extruded_volume", "extruded_volume_total", "total_cost", "total_weight", "extruded_weight_total",
-        "initial_tool", "initial_extruder", "initial_no_support_extruder", "total_toolchanges", "total_wipe_tower_cost", "total_wipe_tower_filament"})
+        "initial_tool", "initial_extruder", "initial_no_support_extruder", "total_toolchanges", "total_wipe_tower_cost", "total_wipe_tower_filament",
+        "printing_filament_types"})
         config.set_key_value(key, new ConfigOptionString(std::string("{") + key + "}"));
     return config;
 }
