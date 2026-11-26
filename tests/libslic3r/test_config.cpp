@@ -893,6 +893,41 @@ TEST_CASE_METHOD(PluginResolverFixture,
     CHECK(manifest == std::vector<std::string>{"x;;slicing-pipeline"});
 }
 
+TEST_CASE("unresolved_plugin_capabilities reports exactly the values the manifest drops", "[Config][plugins]") {
+    // GUI save entry points use this query to warn before a preset loses a plugin reference, so it
+    // must match the serializer's notion of "unresolved" -- same options, same resolver calls.
+    ConfigBase::set_resolve_capability_fn([](const std::string& name, const std::string& type) {
+        return name == "offline" ? std::string() : name + ";;" + type;
+    });
+    std::unique_ptr<DynamicPrintConfig> config(DynamicPrintConfig::new_from_defaults_keys(
+        {"slicing_pipeline_plugin", "printer_agent", "plugins"}));
+    config->option<ConfigOptionStrings>("slicing_pipeline_plugin", true)->values = {"offline", "here"};
+    config->option<ConfigOptionString>("printer_agent", true)->value              = "agent";
+
+    const std::vector<UnresolvedPluginCapability> unresolved = config->unresolved_plugin_capabilities();
+    config->update_plugin_manifest();
+    const std::vector<std::string> manifest = config->option<ConfigOptionStrings>("plugins")->values;
+    ConfigBase::set_resolve_capability_fn(nullptr);
+
+    // Only the value no plugin can provide is reported; the resolved ones are not.
+    REQUIRE(unresolved.size() == 1);
+    CHECK(unresolved.front().opt_key == "slicing_pipeline_plugin");
+    CHECK(unresolved.front().capability_name == "offline");
+    // ... and the manifest holds the complementary set of references (keys() is in sorted order,
+    // so printer_agent comes first).
+    CHECK(manifest == std::vector<std::string>{"agent;;printer-connection", "here;;slicing-pipeline"});
+}
+
+TEST_CASE("unresolved_plugin_capabilities is empty without a resolver", "[Config][plugins]") {
+    // CLI/headless leaves the loaded manifest untouched when it serializes, so nothing is lost and
+    // there is nothing to prompt about.
+    ConfigBase::set_resolve_capability_fn(nullptr);
+    std::unique_ptr<DynamicPrintConfig> config(DynamicPrintConfig::new_from_defaults_keys(
+        {"slicing_pipeline_plugin", "plugins"}));
+    config->option<ConfigOptionStrings>("slicing_pipeline_plugin", true)->values = {"offline"};
+    CHECK(config->unresolved_plugin_capabilities().empty());
+}
+
 TEST_CASE("H2C/A2L-era multi-nozzle and pre-heat config keys exist", "[config]") {
     // Foundation keys backing H2C 6-nozzle cluster grouping, the pre-heat/pre-cool time
     // model, and wipe-tower nozzle-change handling. Defaults must keep existing
@@ -1894,8 +1929,10 @@ TEST_CASE("An empty list applied by index replaces the target list", "[Config][R
     DynamicPrintConfig saved;
     saved.set_key_value("filament_ids", new ConfigOptionStrings());
     DynamicPrintConfig edited;
-    SECTION("target has entries") { edited.set_key_value("filament_ids", new ConfigOptionStrings({"GFA00"})); }
-    SECTION("target lacks the option") {}
+    const bool target_has_entries = GENERATE(false, true);
+    CAPTURE(target_has_entries);
+    if (target_has_entries)
+        edited.set_key_value("filament_ids", new ConfigOptionStrings({"GFA00"}));
 
     edited.apply_only(saved, {"filament_ids#0"});
     CHECK(edited.option<ConfigOptionStrings>("filament_ids")->values.empty());
@@ -1991,4 +2028,51 @@ TEST_CASE("The print speed table keeps a bed outline when the extruders share no
     const BoundingBox outline(Model::getBedPolygon().points);
     CHECK(outline.min == Point(0, 0));
     CHECK(outline.max == Point(scaled(350.), scaled(350.)));
+}
+
+static ConfigOptionInts make_pem(std::vector<int> v) {
+    ConfigOptionInts o;
+    o.values = std::move(v);
+    return o;
+}
+
+TEST_CASE("effective_physical_extruder_map - authored map wins", "[Config][PhysicalExtruderMap]") {
+    // An AFC manifold on a 7-extruder machine: logical 0-3 all feed physical 0. Not derivable,
+    // so it must be honoured verbatim.
+    auto explicit_pem = make_pem({0, 0, 0, 0, 1, 2, 3});
+    auto out = effective_physical_extruder_map(&explicit_pem, 7);
+    REQUIRE(out.values == std::vector<int>{0, 0, 0, 0, 1, 2, 3});
+}
+
+TEST_CASE("effective_physical_extruder_map - a permutation is honoured", "[Config][PhysicalExtruderMap]") {
+    // Shipping BBL dual-nozzle profiles author {1,0}: a slicer/firmware numbering swap, not a
+    // sharing map. Deriving over it would silently renumber both extruders.
+    auto explicit_pem = make_pem({1, 0});
+    auto out = effective_physical_extruder_map(&explicit_pem, 2);
+    REQUIRE(out.values == std::vector<int>{1, 0});
+}
+
+TEST_CASE("effective_physical_extruder_map - unauthored derives the identity", "[Config][PhysicalExtruderMap]") {
+    // The PrintConfig default is a single element, which is not an authored map on a 2-extruder
+    // machine. Identity is what upstream itself falls back to.
+    auto default_pem = make_pem({0});
+    auto out = effective_physical_extruder_map(&default_pem, 2);
+    REQUIRE(out.values == std::vector<int>{0, 1});
+}
+
+TEST_CASE("effective_physical_extruder_map - result is always one entry per extruder", "[Config][PhysicalExtruderMap]") {
+    // The defining property: consumers index this map by logical extruder and size their own
+    // arrays from nozzle_diameter, so a shorter map is an out-of-bounds read in several of them.
+    for (int n : { 1, 2, 4, 7 }) {
+        DYNAMIC_SECTION("nozzle count " << n) {
+            REQUIRE((int) effective_physical_extruder_map(nullptr, n).values.size() == n);
+            auto stale = make_pem({0});   // wrong length: must not be mistaken for authored
+            REQUIRE((int) effective_physical_extruder_map(&stale, n).values.size() == n);
+        }
+    }
+}
+
+TEST_CASE("effective_physical_extruder_map - degenerate nozzle count still yields a usable map", "[Config][PhysicalExtruderMap]") {
+    // Never hand back an empty map: several consumers index it as a raw vector.
+    REQUIRE(effective_physical_extruder_map(nullptr, 0).values == std::vector<int>{0});
 }

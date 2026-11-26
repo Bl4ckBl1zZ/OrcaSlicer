@@ -27,6 +27,7 @@
 #include "wxExtensions.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "Widgets/Button.hpp"
+#include "Widgets/LabeledCheckBox.hpp"
 #include "Widgets/ScrolledWindow.hpp"
 #include "Lazy.hpp"
 
@@ -356,8 +357,17 @@ private:
     //std::vector<std::pair<std::string, Preset::Type>>  names_and_types;
     // additional action buttons used in dialog
     int m_buttons { ActionButtons::TRANSFER | ActionButtons::SAVE };
+    // Set only by the preset-switch constructor; used to re-check a remembered Save choice.
+    PresetCollection* m_dependent_presets { nullptr };
 
     std::string m_new_selected_preset_name;
+
+    // The config PresetBundle::save_changes_for_preset writes for this collection's edited preset:
+    // the edited values with the unselected options reverted to the selected preset's values.
+    DynamicPrintConfig make_save_config(PresetCollection& presets);
+    // True when the presets this Save action would write contain a reportable unresolved plugin
+    // value. Checks the same configs as save(), without showing a dialog.
+    bool selected_save_needs_plugin_warning();
 
 public:
 
@@ -444,8 +454,8 @@ class DiffPresetDialog : public DPIDialog, public LazyInstance<DiffPresetDialog>
     wxBoxSizer*             m_presets_sizer     { nullptr };
     wxStaticText*           m_top_info_line     { nullptr };
     wxStaticText*           m_bottom_info_line  { nullptr };
-    wxCheckBox*             m_show_all_presets  { nullptr };
-    wxCheckBox*             m_use_for_transfer  { nullptr };
+    LabeledCheckBox*        m_show_all_presets  { nullptr };
+    LabeledCheckBox*        m_use_for_transfer  { nullptr };
     wxBoxSizer*             m_buttons           { nullptr };
     wxBoxSizer*             m_edit_sizer        { nullptr };
 

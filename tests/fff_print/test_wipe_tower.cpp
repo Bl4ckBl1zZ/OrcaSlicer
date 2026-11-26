@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <limits>
 #include "libslic3r/Model.hpp"
+#include "libslic3r/Layer.hpp"
 #include "libslic3r/Print.hpp"
 #include <sstream>
 #include <string>
@@ -32,6 +33,8 @@
 #include "libslic3r/LocalesUtils.hpp"
 #include "libslic3r/ModelArrange.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/Slicing.hpp"
+#include "libslic3r/Utils.hpp"
 
 #include "test_helpers.hpp"
 #include "test_utils.hpp"
@@ -253,6 +256,39 @@ static std::string sliced_wipe_tower(const DynamicPrintConfig &config)
     return tower;
 }
 
+TEST_CASE("Tower consumption is classified separately for each printer kind", "[WipeTower][Regression]")
+{
+    const auto [is_bbl, tower_type] = GENERATE(table<bool, std::string>({
+        { false, "type1" }, { false, "type2" }, { true, "type1" } }));
+    CAPTURE(is_bbl, tower_type);
+    const bool previous_bbl = GCodeProcessor::s_IsBBLPrinter;
+    const ScopeGuard restore_bbl([previous_bbl] { GCodeProcessor::s_IsBBLPrinter = previous_bbl; });
+
+    DynamicPrintConfig config = wipe_tower_toolchange_config("marlin");
+    config.set_deserialize_strict({ { "wipe_tower_type", tower_type } });
+    Print print;
+    print.is_BBL_printer() = is_bbl;
+    Model model;
+    init_print({ cube(10) }, print, model, config);
+    print.apply(model, config);
+
+    // Cover the initial non-BBL slice (the global defaults to true) and a change of printer kind.
+    GCodeProcessor::s_IsBBLPrinter = !is_bbl;
+    print.process();
+
+    GCodeProcessorResult result;
+    gcode(print, &result);
+    const auto &statistics = result.print_statistics;
+    REQUIRE(statistics.wipe_tower_volumes_per_extruder.size() == 2);
+    for (size_t filament_id : { size_t(0), size_t(1) }) {
+        CAPTURE(filament_id);
+        REQUIRE(statistics.wipe_tower_volumes_per_extruder.count(filament_id) == 1);
+        CHECK(statistics.wipe_tower_volumes_per_extruder.at(filament_id) > 0.);
+        REQUIRE(statistics.model_volumes_per_extruder.count(filament_id) == 1);
+        CHECK(statistics.model_volumes_per_extruder.at(filament_id) > 0.);
+    }
+}
+
 TEST_CASE("The wipe tower's toolchange planner flush follows the gcode flavor", "[WipeTower]")
 {
     SECTION("klipper") {
@@ -329,6 +365,10 @@ TEST_CASE("The wipe tower's G-code moves keep a decimal point in a comma-decimal
 
 TEST_CASE("The wipe tower's flow tags keep a decimal point in a comma-decimal locale", "[WipeTower]")
 {
+    const bool is_bbl = GENERATE(false, true);
+    CAPTURE(is_bbl);
+    const bool previous_bbl = GCodeProcessor::s_IsBBLPrinter;
+    const ScopeGuard restore_bbl([previous_bbl] { GCodeProcessor::s_IsBBLPrinter = previous_bbl; });
     // GCodeProcessor parses these values with the C locale: a comma makes it log an error and
     // ignore the tag, leaving the extrusion width and height it assumes to its own defaults.
     CommaNumericLocale comma;
@@ -337,17 +377,23 @@ TEST_CASE("The wipe tower's flow tags keep a decimal point in a comma-decimal lo
         SKIP("no locale with a comma decimal separator is installed");
     DynamicPrintConfig config = wipe_tower_toolchange_config("klipper");
     config.set_deserialize_strict({ { "wipe_tower_type", "type1" } });
-    const std::string gcode = slice_with_prime_tower(config);
-    // WipeTowerWriter forces the BBL flag, so the tower writes these spellings on every printer.
-    // By the time the test asks, export has reset the flag for this Klipper config and
-    // reserved_tag() would hand back the main G-code's ";HEIGHT:" / ";WIDTH:" instead.
+    Print print;
+    print.is_BBL_printer() = is_bbl;
+    Model model;
+    init_print({ cube(10) }, print, model, config);
+    print.apply(model, config);
+    print.process();
+    std::string tower_gcode;
+    for (const auto &layer : print.wipe_tower_data().tool_changes)
+        for (const auto &change : layer)
+            tower_gcode += change.gcode;
     // The width and height tags are both written by the writer's constructor, before the
-    // tower's start tag, so scan the whole slice.
-    const std::string height_tag = "; LAYER_HEIGHT: ";
-    const std::string width_tag  = "; LINE_WIDTH: ";
+    // tower's start tag, so scan the complete tower blocks without the model's tags.
+    const std::string height_tag = is_bbl ? "; LAYER_HEIGHT: " : ";HEIGHT:";
+    const std::string width_tag  = is_bbl ? "; LINE_WIDTH: " : ";WIDTH:";
     size_t heights = 0;
     size_t widths  = 0;
-    std::istringstream lines(gcode);
+    std::istringstream lines(tower_gcode);
     for (std::string line; std::getline(lines, line);) {
         const bool is_height = line.compare(0, height_tag.size(), height_tag) == 0;
         const bool is_width  = line.compare(0, width_tag.size(), width_tag) == 0;
@@ -386,6 +432,46 @@ static DynamicPrintConfig tower_estimate_config(const char *wall_type, unsigned 
         { "raft_layers",                    "0"       } });
 }
 
+// The filament a Type 1 tower extrudes for two 20 mm cubes on filaments 1 and 2, so every layer changes
+// filament, given the process prime volume and the prime volume of each filament.
+static double type1_tower_filament(const char *prime_volume, const char *filament_prime_volume)
+{
+    DynamicPrintConfig config = tower_estimate_config("rectangle");
+    config.set_deserialize_strict({ { "wipe_tower_type",       "type1" },
+                                    { "prime_volume",          prime_volume },
+                                    { "filament_prime_volume", filament_prime_volume },
+                                    { "wipe_tower_x",          "120" },
+                                    { "wipe_tower_y",          "120" } });
+    const std::vector<std::vector<ConfigBase::SetDeserializeItem>> overrides = { {}, { { "extruder", "2" } } };
+    Print print;
+    Model model;
+    init_print({ cube(20), cube(20) }, print, model, config, &overrides);
+    const std::string gcode = Slic3r::Test::gcode(print);
+
+    // The filament extruded under the prime tower's role tag.
+    double      extruded = 0.;
+    bool        in_tower = false;
+    GCodeReader parser;
+    parser.apply_config(print.config());
+    parser.parse_buffer(gcode, [&](GCodeReader &self, const GCodeReader::GCodeLine &line) {
+        const std::string_view raw = line.raw();
+        if (raw.rfind(";TYPE:", 0) == 0 || raw.rfind("; FEATURE: ", 0) == 0)
+            in_tower = raw.find("Prime tower") != std::string_view::npos;
+        else if (in_tower && line.extruding(self))
+            extruded += line.dist_E(self);
+    });
+    return extruded;
+}
+
+TEST_CASE("The Type 1 tower purges the prime volume of each filament, not the process one", "[WipeTower]")
+{
+    const double filament_45 = type1_tower_filament("45", "45,45");
+    REQUIRE(filament_45 > 0.);
+    CHECK_THAT(type1_tower_filament("5", "45,45"), Catch::Matchers::WithinRel(filament_45, 1e-6));
+    CHECK_THAT(type1_tower_filament("60", "45,45"), Catch::Matchers::WithinRel(filament_45, 1e-6));
+    CHECK(type1_tower_filament("45", "15,15") < filament_45);
+}
+
 TEST_CASE("The tower is sized for the thinnest layer any object on the plate is sliced at", "[WipeTower]")
 {
     // The tower has to survive its thinnest layer, so an override finer than the preset drives
@@ -403,6 +489,226 @@ TEST_CASE("The tower is sized for the thinnest layer any object on the plate is 
     const float floor_20mm = WipeTower::get_limit_depth_by_height(20.f);
     REQUIRE(floor_20mm < 10.f);
     CHECK_THAT(print.wipe_tower_data(2).depth, Catch::Matchers::WithinAbs(20., 1e-4));
+}
+
+// A 20 mm and a 10 mm tall box sharing one variable layer height profile: 0.2 mm layers up to
+// 5 mm, thinning to 0.1 mm at 10 mm and staying there. `fit` says whether the lower box gets the
+// profile cut to its own height, or the tall box's profile as it is. Each box prints with its own
+// filament, which is what makes the tower real.
+static std::string validate_two_heights_with_variable_layers(bool fit, bool precise_z_height = false,
+                                                             std::vector<StringObjectException> *warnings = nullptr)
+{
+    const DynamicPrintConfig config = multifilament_config(2, {
+        { "enable_prime_tower",         "1"         },
+        { "wipe_tower_x",               "50"        }, // inside the 200x200 test bed
+        { "wipe_tower_y",               "50"        }, // (the default y, 220, is not)
+        { "layer_change_gcode",         "G92 E0\n" }, // validate() wants the relative-E reset
+        { "layer_height",               "0.2"       },
+        { "initial_layer_print_height", "0.2"       },
+        { "precise_z_height",           precise_z_height ? "1" : "0" },
+        { "raft_layers",                "0"         } });
+    const std::vector<std::vector<ConfigBase::SetDeserializeItem>> overrides{ { { "extruder", "1" } }, { { "extruder", "2" } } };
+    const std::vector<coordf_t> profile = { 0., 0.2, 5., 0.2, 10., 0.1, 20., 0.1 };
+
+    Print print;
+    Model model;
+    init_print(std::vector<TriangleMesh>{ make_cube(20, 20, 20), make_cube(20, 20, 10) }, print, model, config, &overrides);
+    model.objects[0]->layer_height_profile.set(profile);
+    model.objects[1]->layer_height_profile.set(fit ? layer_height_profile_fit_to_height(profile, 10.) : profile);
+    print.apply(model, config);
+    REQUIRE(print.has_wipe_tower());
+    // Precise Z height would fit the last layers of each box to its own height, so it is left out when it is on.
+    REQUIRE(print.precise_z_height_overridden() == precise_z_height);
+    // Leaving it out slices the boxes again, which must not leave them without slicing parameters.
+    for (const PrintObject *object : print.objects())
+        REQUIRE(object->slicing_parameters().valid);
+    return print.validate(warnings).string;
+}
+
+TEST_CASE("Objects of different heights keep the prime tower when they share a variable layer height profile", "[WipeTower]")
+{
+    CHECK_THAT(validate_two_heights_with_variable_layers(true), !Catch::Matchers::ContainsSubstring("layer height"));
+}
+
+TEST_CASE("Precise Z height is left out when objects of different heights share their layers under the prime tower", "[WipeTower]")
+{
+    CHECK_THAT(validate_two_heights_with_variable_layers(true, true), !Catch::Matchers::ContainsSubstring("layer height"));
+}
+
+TEST_CASE("Leaving precise Z height out is reported only when it is on", "[WipeTower]")
+{
+    const auto reported = [](bool precise_z_height) {
+        std::vector<StringObjectException> warnings;
+        validate_two_heights_with_variable_layers(true, precise_z_height, &warnings);
+        return std::any_of(warnings.begin(), warnings.end(), [](const StringObjectException &warning) {
+            return warning.string.find("Precise Z height is not applied") != std::string::npos;
+        });
+    };
+    CHECK(reported(true));
+    CHECK_FALSE(reported(false));
+}
+
+TEST_CASE("Precise Z height applies again once the prime tower is turned off", "[WipeTower]")
+{
+    DynamicPrintConfig config = multifilament_config(2, {
+        { "enable_prime_tower",         "1"         },
+        { "wipe_tower_x",               "50"        },
+        { "wipe_tower_y",               "50"        },
+        { "layer_change_gcode",         "G92 E0\n" },
+        { "layer_height",               "0.2"       },
+        { "initial_layer_print_height", "0.2"       },
+        { "precise_z_height",           "1"         },
+        { "raft_layers",                "0"         } });
+    const std::vector<std::vector<ConfigBase::SetDeserializeItem>> overrides{ { { "extruder", "1" } }, { { "extruder", "2" } } };
+    const std::vector<coordf_t> profile = { 0., 0.2, 5., 0.2, 10., 0.1, 20., 0.1 };
+
+    Print print;
+    Model model;
+    init_print(std::vector<TriangleMesh>{ make_cube(20, 20, 20), make_cube(20, 20, 10.05) }, print, model, config, &overrides);
+    model.objects[0]->layer_height_profile.set(profile);
+    model.objects[1]->layer_height_profile.set(layer_height_profile_fit_to_height(profile, 10.05));
+    print.apply(model, config);
+    REQUIRE(print.precise_z_height_overridden());
+    REQUIRE(print.objects().size() == 2);
+    CHECK_FALSE(print.get_object(1)->precise_z_height());
+
+    config.set_deserialize_strict({ { "enable_prime_tower", "0" } });
+    print.apply(model, config);
+    REQUIRE_FALSE(print.has_wipe_tower());
+    CHECK_FALSE(print.precise_z_height_overridden());
+    REQUIRE(print.objects().size() == 2);
+    PrintObject &lower = *print.get_object(1);
+    CHECK(lower.precise_z_height());
+    REQUIRE(lower.slicing_parameters().valid);
+    lower.slice();
+    REQUIRE(lower.layer_count() > 50);
+    CHECK_THAT(lower.get_layer(int(lower.layer_count()) - 1)->print_z, Catch::Matchers::WithinAbs(10.05, 1e-4));
+}
+
+TEST_CASE("A variable layer height profile that does not end at the object's top is rejected with the prime tower", "[WipeTower]")
+{
+    // The profile is dropped for the lower box, which is then sliced at a constant 0.2 mm.
+    CHECK_THAT(validate_two_heights_with_variable_layers(false), Catch::Matchers::ContainsSubstring("same variable layer height"));
+}
+
+// Two boxes of different heights, both with a height range modifier over the same 2 to 5 mm.
+// `range_layer_height` is the layer height the modifier asks for on the lower box; the tall one keeps
+// the 0.2 mm of the print, so 0.2 leaves every layer where it was.
+static std::string validate_two_heights_with_height_ranges(double range_layer_height)
+{
+    const DynamicPrintConfig config = multifilament_config(2, {
+        { "enable_prime_tower",         "1"         },
+        { "wipe_tower_x",               "50"        },
+        { "wipe_tower_y",               "50"        },
+        { "layer_change_gcode",         "G92 E0\n" },
+        { "layer_height",               "0.2"       },
+        { "initial_layer_print_height", "0.2"       },
+        { "raft_layers",                "0"         } });
+    const std::vector<std::vector<ConfigBase::SetDeserializeItem>> overrides{ { { "extruder", "1" } }, { { "extruder", "2" } } };
+
+    Print print;
+    Model model;
+    init_print(std::vector<TriangleMesh>{ make_cube(20, 20, 20), make_cube(20, 20, 10) }, print, model, config, &overrides);
+    for (size_t idx = 0; idx < 2; ++idx) {
+        DynamicPrintConfig range_config;
+        // Every layer range carries a layer height, also one that only changes another setting.
+        range_config.set_key_value("layer_height", new ConfigOptionFloat(idx == 1 ? range_layer_height : 0.2));
+        range_config.set_key_value("wall_loops", new ConfigOptionInt(3));
+        model.objects[idx]->layer_config_ranges[{ 2., 5. }].assign_config(std::move(range_config));
+    }
+    print.apply(model, config);
+    REQUIRE(print.has_wipe_tower());
+    return print.validate().string;
+}
+
+TEST_CASE("Height range modifiers that leave the layers alone keep the prime tower on objects of different heights", "[WipeTower]")
+{
+    CHECK_THAT(validate_two_heights_with_height_ranges(0.2), !Catch::Matchers::ContainsSubstring("layer height"));
+}
+
+TEST_CASE("Height range modifiers that put the objects on different layers are rejected with the prime tower", "[WipeTower]")
+{
+    CHECK_THAT(validate_two_heights_with_height_ranges(0.1), Catch::Matchers::ContainsSubstring("same variable layer height"));
+}
+
+TEST_CASE("Objects of different heights sharing a profile are sliced on the same layers under the prime tower", "[WipeTower]")
+{
+    // What the prime tower needs is that the objects are sliced at the same Z, which this checks on the
+    // sliced layers rather than on validate() alone. The lower box is 10.05 mm tall, between two layers
+    // of the shared profile: with precise Z height on, its last layers would be fitted to end at
+    // 10.05 mm and leave the tall box's, if only by a micrometre or so. The print leaves precise Z height
+    // out, so they must not.
+    const DynamicPrintConfig config = multifilament_config(2, {
+        { "enable_prime_tower",         "1"         },
+        { "wipe_tower_x",               "50"        },
+        { "wipe_tower_y",               "50"        },
+        { "layer_change_gcode",         "G92 E0\n" },
+        { "layer_height",               "0.2"       },
+        { "initial_layer_print_height", "0.2"       },
+        { "precise_z_height",           "1"         },
+        { "raft_layers",                "0"         } });
+    const std::vector<std::vector<ConfigBase::SetDeserializeItem>> overrides{ { { "extruder", "1" } }, { { "extruder", "2" } } };
+    const std::vector<coordf_t> profile = { 0., 0.2, 5., 0.2, 10., 0.1, 20., 0.1 };
+
+    Print print;
+    Model model;
+    init_print(std::vector<TriangleMesh>{ make_cube(20, 20, 20), make_cube(20, 20, 10.05) }, print, model, config, &overrides);
+    model.objects[0]->layer_height_profile.set(profile);
+    model.objects[1]->layer_height_profile.set(layer_height_profile_fit_to_height(profile, 10.05));
+    print.apply(model, config);
+    REQUIRE(print.has_wipe_tower());
+    REQUIRE(print.precise_z_height_overridden());
+    REQUIRE(print.validate().string.empty());
+    REQUIRE(print.objects().size() == 2);
+
+    // Slicing the objects is where precise Z height would act, so their layers are compared right
+    // after it, before the tower is generated from them.
+    PrintObject &tall  = *print.get_object(0);
+    PrintObject &lower = *print.get_object(1);
+    tall.slice();
+    lower.slice();
+    REQUIRE(lower.layer_count() > 50);
+    REQUIRE(lower.layer_count() < tall.layer_count());
+    for (size_t idx = 0; idx < lower.layer_count(); ++idx) {
+        INFO("layer " << idx);
+        CHECK_THAT(lower.get_layer(int(idx))->print_z, Catch::Matchers::WithinAbs(tall.get_layer(int(idx))->print_z, 1e-6));
+    }
+
+    // And the tower is generated from those layers.
+    print.process();
+    CHECK(print.is_step_done(psWipeTower));
+}
+
+TEST_CASE("Precise Z height still fits objects of different heights when there is no prime tower", "[WipeTower]")
+{
+    // The same plate as above without the tower: nothing asks the objects to share their layers, so
+    // precise Z height stays on and fits the last layers of the 10.05 mm box to end at its top, where
+    // the shared profile alone would stop at about 10.0515 mm.
+    const DynamicPrintConfig config = multifilament_config(2, {
+        { "enable_prime_tower",         "0"         },
+        { "layer_change_gcode",         "G92 E0\n" },
+        { "layer_height",               "0.2"       },
+        { "initial_layer_print_height", "0.2"       },
+        { "precise_z_height",           "1"         },
+        { "raft_layers",                "0"         } });
+    const std::vector<std::vector<ConfigBase::SetDeserializeItem>> overrides{ { { "extruder", "1" } }, { { "extruder", "2" } } };
+    const std::vector<coordf_t> profile = { 0., 0.2, 5., 0.2, 10., 0.1, 20., 0.1 };
+
+    Print print;
+    Model model;
+    init_print(std::vector<TriangleMesh>{ make_cube(20, 20, 20), make_cube(20, 20, 10.05) }, print, model, config, &overrides);
+    model.objects[0]->layer_height_profile.set(profile);
+    model.objects[1]->layer_height_profile.set(layer_height_profile_fit_to_height(profile, 10.05));
+    print.apply(model, config);
+    REQUIRE_FALSE(print.has_wipe_tower());
+    REQUIRE_FALSE(print.precise_z_height_overridden());
+    REQUIRE(print.objects().size() == 2);
+
+    PrintObject &lower = *print.get_object(1);
+    CHECK(lower.precise_z_height());
+    lower.slice();
+    REQUIRE(lower.layer_count() > 50);
+    CHECK_THAT(lower.get_layer(int(lower.layer_count()) - 1)->print_z, Catch::Matchers::WithinAbs(10.05, 1e-4));
 }
 
 TEST_CASE("Validation is given the tower's effective width, not the configured one", "[WipeTower]")
@@ -588,9 +894,8 @@ TEST_CASE("A run too thin to reach the nozzle's layer height is left alone", "[W
 
 TEST_CASE("A merged tower layer declares its own height to the G-code processor", "[WipeTower]")
 {
-    // Each writer declares a height in a hardcoded tag dialect while the processor reads only its
-    // printer's, so one of them is always dropped. A merged layer is the first time that shows, as a
-    // thick layer drawn and costed as a thin one. 0.2 mm layers under a 0.42 mm maximum merge in pairs.
+    // The processor must read the merged tower's height rather than the object's layer height.
+    // 0.2 mm layers under a 0.42 mm maximum merge in pairs.
     const SparseRunResult plain    = slice_sparse_run(sparse_run_config(0.2, "0.42", false));
     const SparseRunResult combined = slice_sparse_run(sparse_run_config(0.2, "0.42", true));
 
@@ -873,7 +1178,7 @@ TEST_CASE("Without sparse layers the filament change starts at the tallest print
     GCodeReader parser;
     parser.parse_buffer(gcode, [&](GCodeReader &self, const GCodeReader::GCodeLine &line) {
         const std::string_view raw = line.raw();
-        // Objects are tagged with the processor's ;TYPE:, the tower with its own ; FEATURE:.
+        // Track the extrusion role using the tag format emitted for the printer.
         if (raw.rfind(";TYPE:", 0) == 0 || raw.rfind("; FEATURE: ", 0) == 0)
             in_tower = raw.find("Prime tower") != std::string_view::npos;
         else if (line.extruding(self) && (line.has_x() || line.has_y())) { // not an unretract

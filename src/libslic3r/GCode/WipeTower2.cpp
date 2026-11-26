@@ -353,9 +353,6 @@ public:
         m_gcode_flavor(flavor), m_filpar(filament_parameters)
         //m_enable_arc_fitting(enable_arc_fitting)
     {
-            // ORCA: This class is only used by non BBL printers, so set the parameter appropriately.
-            // This fixes an issue where the wipe tower was using BBL tags resulting in statistics for purging in the purge tower not being displayed.
-            GCodeProcessor::s_IsBBLPrinter = false;
             // adds tag for analyzer:
             std::ostringstream str;
             str << ";" << GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Height) << m_layer_height << "\n"; // don't rely on GCodeAnalyzer knowing the layer height - it knows nothing at priming
@@ -1089,6 +1086,14 @@ WipeTower2::WipeTower2(const PrintConfig& config, const PrintRegionConfig& defau
     if (m_perimeter_speed == 0.f)
         m_perimeter_speed = 80.f;
 
+    if (config.enable_volumetric_speeds) {
+        const size_t extruder_idx         = get_extruder_index(config, (unsigned int)initial_tool);
+        const double max_volumetric_speed = config.filament_max_volumetric_speed.get_at(initial_tool);
+        m_infill_volumetric_flow      = float(default_region_config.sparse_infill_volumetric_flow.get_at(extruder_idx).get_abs_value(max_volumetric_speed));
+        m_perimeter_volumetric_flow   = float(default_region_config.inner_wall_volumetric_flow.get_at(extruder_idx).get_abs_value(max_volumetric_speed));
+        m_first_layer_volumetric_flow = float(config.initial_layer_volumetric_flow.get_at(extruder_idx).get_abs_value(max_volumetric_speed));
+    }
+
 
     // If this is a single extruder MM printer, we will use all the SE-specific config values.
     // Otherwise, the defaults will be used to turn off the SE stuff.
@@ -1289,7 +1294,8 @@ std::vector<WipeTower::ToolChangeResult> WipeTower2::prime(
         toolchange_Load(writer, cleaning_box); // Prime the tool.
         if (idx_tool + 1 == tools.size()) {
             // Last tool should not be unloaded, but it should be wiped enough to become of a pure color.
-            toolchange_Wipe(writer, cleaning_box, wipe_volumes[tools[idx_tool-1]][tool], false, true);
+            const float wipe_volume = idx_tool == 0 ? 0.f : wipe_volumes[tools[idx_tool - 1]][tool];
+            toolchange_Wipe(writer, cleaning_box, wipe_volume, false, true);
         } else {
             // Ram the hot material out of the melt zone, retract the filament into the cooling tubes and let it cool.
             //writer.travel(writer.x(), writer.y() + m_perimeter_width, 7200);
