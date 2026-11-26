@@ -8,6 +8,8 @@
 namespace Slic3r::SlicerLinuxRuntime {
 
 bool enabled();
+// The OrbStack command line tool on macOS, or empty when OrbStack is not installed.
+std::string orbstack_cli_path();
 bool use_linux_runtime();
 bool source_module_uses_linux_runtime();
 bool should_select_linux_component_package(const std::string& component_name);
@@ -22,7 +24,7 @@ std::string linux_component_library_name();
 std::string linux_source_library_name();
 std::string host_executable_file_name();
 std::string mac_host_wrapper_file_name();
-std::string mac_lima_instance_file_name();
+std::string mac_orbstack_machine_file_name();
 std::string mac_runtime_install_script_file_name();
 std::string mac_runtime_verify_script_file_name();
 std::string windows_wsl_distro_file_name();

@@ -1,6 +1,7 @@
 #include "MainFrame.hpp"
 
 #include <wx/event.h>
+#include <wx/evtloop.h>
 #include "slic3r/GUI/Event.hpp"
 #include <wx/gdicmn.h>
 #include <wx/dcclient.h>
@@ -609,8 +610,23 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     });
 
     //BBS
-    Bind(EVT_SELECT_TAB, [this](wxCommandEvent& evt) {
-        m_tabpanel->SelectPageByName(evt.GetString());
+    // A tab built on its first show may create a web view, which waits for WebKit in a yield loop. Inside a
+    // modal loop, typically the send dialog's after a print job ends it with EndModal, macOS closes the
+    // modal session first, the reply never arrives and the app hangs. Such a request waits for the main loop.
+    auto in_main_loop = [] {
+        const wxEventLoopBase* loop = wxEventLoopBase::GetActive();
+        return loop == nullptr || loop->IsMain();
+    };
+    Bind(EVT_SELECT_TAB, [this, in_main_loop](wxCommandEvent& evt) {
+        if (in_main_loop())
+            m_tabpanel->SelectPageByName(evt.GetString());
+        else
+            m_deferred_select_tab = evt.GetString();
+    });
+    Bind(wxEVT_IDLE, [this, in_main_loop](wxIdleEvent& evt) {
+        evt.Skip();
+        if (!m_deferred_select_tab.empty() && in_main_loop())
+            m_tabpanel->SelectPageByName(std::exchange(m_deferred_select_tab, wxString()));
     });
 
     Bind(EVT_SYNC_CLOUD_PRESET, &MainFrame::on_select_default_preset, this);

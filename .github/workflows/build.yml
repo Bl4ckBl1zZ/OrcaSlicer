@@ -1,6 +1,6 @@
 name: Build
 
-# Windows x64 (with the Bambu Linux bridge) and macOS arm64 builds of this fork.
+# Windows x64 and macOS arm64 builds of this fork, both with the Bambu Linux bridge.
 #
 #   linux-runtime -> windows-x64 (setup .exe + portable zip) \
 #                    macos-arm64 (DMG)                        -> release (v* tags only)
@@ -18,7 +18,7 @@ on:
         type: boolean
         default: true
       macos:
-        description: Build macOS arm64 DMG (ad-hoc signed)
+        description: Build macOS arm64 DMG (Bambu Linux bridge through OrbStack; ad-hoc signed)
         type: boolean
         default: true
       linux:
@@ -40,12 +40,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The two inputs of the Windows build that have to be made on Linux: the runtime host that
-  # runs inside the WSL2 distro, and the root filesystem of that distro. All of the logic is in
-  # the script, which runs the same way outside Actions.
+  # The two inputs of the Windows and macOS builds that have to be made on Linux: the runtime host
+  # that runs inside the WSL2 distro or OrbStack machine, and the x86-64 root filesystem it uses. All
+  # of the logic is in the script, which runs the same way outside Actions.
   linux-runtime:
     name: Linux runtime (host + WSL rootfs)
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows || inputs.linux }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows || inputs.macos || inputs.linux }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -470,6 +470,7 @@ jobs:
 
   macos-arm64:
     name: macOS arm64
+    needs: [linux-runtime]
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.macos }}
     # The image upstream builds on; arm64 (Apple Silicon).
     runs-on: macos-15
@@ -594,10 +595,27 @@ jobs:
           key: ${{ env.CCACHE_ENTRY }}
           restore-keys: ccache-${{ env.CCACHE_LEG }}-
 
+      - name: Download the Linux runtime
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-runtime
+          path: ${{ runner.temp }}/linux-runtime
+
+      - name: Stage the Linux runtime
+        run: ./tools/slicer_linux_runtime/ci/stage_linux_runtime.sh "$RUNNER_TEMP/linux-runtime"
+
       - name: Build OrcaSlicer
         run: |
           if command -v ccache >/dev/null 2>&1; then ccache -z || true; fi
           ./build_release_macos.sh -s -n -x -j 3 -a arm64 -t 10.15
+          # Without the package the app silently keeps Bambu's macOS plug-in.
+          package="build/arm64/OrcaSlicer/OrcaSlicer.app/Contents/Resources/linux_runtime"
+          for name in libslicer_linux_runtime.dylib slicer_linux_runtime_host slicer_linux_runtime_host_abi1 \
+                      slicer_linux_runtime_wsl_run_host.sh install_runtime_macos.sh windows-wsl2-rootfs.tar; do
+            [ -f "$package/$name" ] || { echo "::error::$package/$name is missing"; exit 1; }
+          done
+          [ "$(lipo -archs "$package/libslicer_linux_runtime.dylib")" = "arm64" ] \
+            || { echo "::error::libslicer_linux_runtime.dylib is not arm64"; exit 1; }
 
       - name: Compiler cache statistics
         if: ${{ always() && steps.ccache.outcome == 'success' }}
@@ -726,7 +744,8 @@ jobs:
             echo 'xattr -dr com.apple.quarantine /Applications/OrcaSlicer.app'
             echo '```'
             echo
-            echo "This build has no Bambu Linux bridge; it loads Bambu's macOS network plug-in like stock OrcaSlicer."
+            echo "With [OrbStack](https://orbstack.dev) installed, the Bambu Linux bridge runs Bambu's Linux network plug-in"
+            echo "in an OrbStack machine; without it the app loads Bambu's macOS plug-in like stock OrcaSlicer."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the DMG

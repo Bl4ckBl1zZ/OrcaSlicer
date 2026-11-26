@@ -8,11 +8,14 @@
 #include <vector>
 
 #include <boost/dll/runtime_symbol_info.hpp>
+#include <boost/filesystem/directory.hpp>
 #include <boost/filesystem/operations.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/process.hpp>
 #if defined(_WIN32)
 #include <boost/process/windows.hpp>
+#else
+#include <unistd.h>
 #endif
 
 namespace Slic3r::SlicerLinuxRuntime {
@@ -80,7 +83,12 @@ fs::path runtime_package_dir()
     const fs::path exe = boost::dll::program_location(ec);
     if (ec || exe.empty())
         return {};
+#if defined(__APPLE__)
+    // OrcaSlicer.app/Contents/MacOS/OrcaSlicer -> OrcaSlicer.app/Contents/Resources: Contents/MacOS is for code only.
+    const fs::path dir = exe.parent_path().parent_path() / "Resources" / runtime_package_folder_name();
+#else
     const fs::path dir = exe.parent_path() / runtime_package_folder_name();
+#endif
     return fs::is_directory(dir, ec) ? dir : fs::path();
 }
 
@@ -150,35 +158,24 @@ bool sync_runtime_package(const fs::path& component_dir, std::string* reason)
     return all_ok;
 }
 
-RuntimeCommandResult install_wsl_runtime(const fs::path& component_dir,
-                                         const fs::path& component_cache_dir,
-                                         const std::function<bool()>& cancel_requested)
+namespace {
+
+unsigned long current_process_id()
+{
+#if defined(_WIN32)
+    return ::GetCurrentProcessId();
+#else
+    return static_cast<unsigned long>(::getpid());
+#endif
+}
+
+// Runs an installer script with its output captured in temporary files, and logs the result.
+RuntimeCommandResult run_install_script(const fs::path& exe, const std::vector<std::string>& arguments,
+                                        const std::function<bool()>& cancel_requested)
 {
     RuntimeCommandResult result;
-#if defined(_WIN32)
-    const fs::path script = component_dir / windows_wsl_import_script_file_name();
     boost::system::error_code ec;
-    if (!fs::is_regular_file(script, ec)) {
-        result.output = "missing " + script.string();
-        return result;
-    }
-    const fs::path powershell = bp::search_path("powershell.exe");
-    if (powershell.empty()) {
-        result.output = "powershell.exe not found";
-        return result;
-    }
-    fs::create_directories(component_cache_dir, ec);
-
-    const std::vector<std::string> arguments = {
-        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-        "-File", script.string(),
-        "-PackageDir", component_dir.string(),
-        "-PluginDir", component_dir.string(),
-        "-PluginCacheDir", component_cache_dir.string(),
-        "-SkipCopyToPluginDir"
-    };
-
-    const std::string suffix = std::to_string(::GetCurrentProcessId()) + "-" +
+    const std::string suffix = std::to_string(current_process_id()) + "-" +
         std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
     const fs::path stdout_path = fs::temp_directory_path() / ("orca-linux-runtime-" + suffix + ".out");
     const fs::path stderr_path = fs::temp_directory_path() / ("orca-linux-runtime-" + suffix + ".err");
@@ -186,10 +183,14 @@ RuntimeCommandResult install_wsl_runtime(const fs::path& component_dir,
     fs::remove(stderr_path, ec);
 
     try {
-        bp::child child(powershell.string(), bp::args(arguments),
-                        bp::std_out > stdout_path.string(), bp::std_err > stderr_path.string(), bp::std_in < bp::null,
-                        bp::windows::create_no_window, bp::windows::hide);
-        // Importing the rootfs takes well under a minute on a healthy machine.
+        bp::child child(exe.string(), bp::args(arguments),
+                        bp::std_out > stdout_path.string(), bp::std_err > stderr_path.string(), bp::std_in < bp::null
+#if defined(_WIN32)
+                        , bp::windows::create_no_window, bp::windows::hide
+#endif
+        );
+        // Importing the rootfs takes well under a minute on a healthy machine; creating the OrbStack machine
+        // and installing QEMU downloads a few hundred MB.
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(15);
         while (child.running()) {
             if ((cancel_requested && cancel_requested()) || std::chrono::steady_clock::now() > deadline) {
@@ -219,13 +220,49 @@ RuntimeCommandResult install_wsl_runtime(const fs::path& component_dir,
     fs::remove(stdout_path, ec);
     fs::remove(stderr_path, ec);
 
-    BOOST_LOG_TRIVIAL(info) << "linux_runtime: install_runtime.ps1 exit_code=" << result.exit_code
+    BOOST_LOG_TRIVIAL(info) << "linux_runtime: " << arguments.front() << " exit_code=" << result.exit_code
                             << ", canceled=" << result.canceled;
     if (!result.output.empty()) {
         if (result.ok())
             BOOST_LOG_TRIVIAL(info) << "linux_runtime: " << result.output;
         else
             BOOST_LOG_TRIVIAL(error) << "linux_runtime: " << result.output;
+    }
+    return result;
+}
+
+} // namespace
+
+RuntimeCommandResult install_wsl_runtime(const fs::path& component_dir,
+                                         const fs::path& component_cache_dir,
+                                         const std::function<bool()>& cancel_requested)
+{
+    RuntimeCommandResult result;
+#if defined(_WIN32) || defined(__APPLE__)
+#if defined(_WIN32)
+    const fs::path script = component_dir / windows_wsl_import_script_file_name();
+    const fs::path exe    = bp::search_path("powershell.exe");
+    const std::vector<std::string> arguments = {
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", script.string(),
+        "-PackageDir", component_dir.string(),
+        "-PluginDir", component_dir.string(),
+        "-PluginCacheDir", component_cache_dir.string(),
+        "-SkipCopyToPluginDir"
+    };
+#else
+    const fs::path script = component_dir / mac_runtime_install_script_file_name();
+    const fs::path exe    = "/bin/sh";
+    const std::vector<std::string> arguments = {script.string(), component_dir.string(), component_cache_dir.string()};
+#endif
+    boost::system::error_code ec;
+    if (!fs::is_regular_file(script, ec)) {
+        result.output = "missing " + script.string();
+    } else if (exe.empty()) {
+        result.output = "powershell.exe not found";
+    } else {
+        fs::create_directories(component_cache_dir, ec);
+        result = run_install_script(exe, arguments, cancel_requested);
     }
 #else
     (void) component_dir;

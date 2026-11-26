@@ -62,3 +62,4 @@ tools/slicer_linux_runtime/rootfs/*.tar
 # ...and its installer scripts, which the install_* rule above would hide
 !tools/slicer_linux_runtime/wsl/install_runtime.cmd
 !tools/slicer_linux_runtime/wsl/install_runtime.ps1
+!tools/slicer_linux_runtime/macos/install_runtime_macos.sh

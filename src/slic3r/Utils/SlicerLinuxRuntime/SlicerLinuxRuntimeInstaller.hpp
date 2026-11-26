@@ -32,8 +32,9 @@ struct RuntimeCommandResult
     bool ok() const { return !canceled && exit_code == 0; }
 };
 
-// Runs install_runtime.ps1 from component_dir: imports the WSL2 distro when it is missing or its
-// rootfs changed, then verifies it. Blocks until the script ends; cancel_requested is polled.
+// Runs the runtime installer from component_dir: install_runtime.ps1 on Windows imports the WSL2 distro,
+// install_runtime_macos.sh on macOS prepares the OrbStack machine, each when missing or when its rootfs
+// changed, then verifies it. Blocks until the script ends; cancel_requested is polled.
 RuntimeCommandResult install_wsl_runtime(const boost::filesystem::path& component_dir,
                                          const boost::filesystem::path& component_cache_dir,
                                          const std::function<bool()>& cancel_requested = {});
