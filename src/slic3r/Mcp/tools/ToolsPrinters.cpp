@@ -2,7 +2,7 @@
 //
 // All four are off until the user switches them on in Preferences (two switches: read, send); see
 // tools/printers/Printers.hpp for what leaves the application and tools/printers/SendConfirm.hpp for
-// the confirmation window every send and every stop goes through. DESIGN.md D13 has the reasoning.
+// the confirmation window every send and every stop goes through (unless the user made sends unattended). DESIGN.md D13 has the reasoning.
 
 #include <chrono>
 #include <memory>
@@ -250,6 +250,8 @@ MCP_TOOL_GROUP(Printers)
         tool.description =
             "Sends a sliced plate to a printer, after the user confirms it in a window of the application (the user sees the plate picture, "
             "the printer, the filament-to-tray mapping, time, weight and options, and clicks Send or Cancel; nothing is sent otherwise). "
+            "When the user has also switched on \"Send print jobs without asking me\" (app_status printers.send_unattended), no window "
+            "opens and the plate is sent as soon as the checks pass: only send what the user asked for. "
             "Needs the Preferences switch \"Allow AI agents to send print jobs\" (off by default; printer_access_disabled otherwise; no "
             "tool can change it, so ask the user). Checks first and fails without asking when: the plate is not sliced (not_sliced) or "
             "changed since (slice_stale), a slice runs (busy_slicing), the printer is offline (printer_offline), has no recent status "
@@ -313,7 +315,7 @@ MCP_TOOL_GROUP(Printers)
         tool.description =
             "Pauses, resumes or stops the print running on a printer. Needs the Preferences switch \"Allow AI agents to send print jobs\". "
             "pause and resume are sent at once and return {ok}; check the effect with printer_status. stop asks the user in a window of "
-            "the application first, like print_send, and runs as a job (outcome stopped, or declined / timed_out). Fails with "
+            "the application first, like print_send (not when sends are unattended), and runs as a job (outcome stopped, or declined / timed_out). Fails with "
             "invalid_state when a Bambu Lab printer cannot do it now (nothing printing, already paused ...); a host that refuses "
             "gives control_failed.";
         tool.input_schema = Schema::parse(R"JSON({

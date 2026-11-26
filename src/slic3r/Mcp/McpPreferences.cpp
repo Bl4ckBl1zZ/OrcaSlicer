@@ -109,8 +109,15 @@ void add_preferences_section(PreferencesDialog& dialog, wxWindow* parent, wxSize
                                            "mcp_printer_read"));
     sizer->Add(dialog.create_item_checkbox(_L("Allow AI agents to send print jobs"),
                                            _L("Lets the agent ask to send a sliced plate to a printer, and to pause, resume or stop a "
-                                              "print. Every job and every stop needs your click in a confirmation window first."),
+                                              "print. Every job and every stop needs your click in a confirmation window first, "
+                                              "unless \"Send print jobs without asking me\" is on."),
                                            "mcp_printer_send"));
+    sizer->Add(dialog.create_item_checkbox(_L("Send print jobs without asking me"),
+                                           _L("With \"Allow AI agents to send print jobs\" on, the agent's print jobs and stops go to the "
+                                              "printer without a confirmation window, so you can start prints from another device. "
+                                              "OrcaSlicer still checks that the printer is online, idle and loaded with matching filament, but "
+                                              "nobody checks the bed is clear."),
+                                           "mcp_printer_send_unattended"));
 
     // Connecting a client.
     sizer->Add(dialog.create_item_button(_L("Connect Claude Code"), _L("Copy command"),

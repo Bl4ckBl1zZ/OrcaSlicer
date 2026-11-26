@@ -225,7 +225,8 @@ key, so the MCP section's switches stay the user's). The one exception to the fi
 printer group (`tools/printers/`, [tools-printers.md](tools-printers.md)): it uses the device
 manager and the application's own print job and print host upload, only while the user's
 Preferences switches `mcp_printer_read` / `mcp_printer_send` are on, and every send and stop waits
-for the user's click in its confirmation window.
+for the user's click in its confirmation window unless the user switched on
+`mcp_printer_send_unattended`.
 Settings that run code or hold the printer's address or credentials (`post_process`, `print_host`,
 `print_host_webui`, `printhost_*`, `host_type`, `flashforge_serial_number`, plugin-backed options)
 are read-only (`Settings::write_refusal`), with secrets redacted (`Settings::value_json_for`, which
