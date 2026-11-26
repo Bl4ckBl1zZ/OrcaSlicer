@@ -43,7 +43,7 @@ const char* server_instructions()
            "Files: only inside the folders app_status lists.\n"
            "\n"
            "Printers (only if the user allowed it in Preferences): printer_list, printer_status; print_send asks the user in a "
-           "confirmation window (a job). A declined or timed-out send is the user's answer: do not retry it.";
+           "confirmation window (a job) unless they switched that off. Do not retry a declined or timed-out send.";
 }
 
 }}} // namespace Slic3r::GUI::Mcp

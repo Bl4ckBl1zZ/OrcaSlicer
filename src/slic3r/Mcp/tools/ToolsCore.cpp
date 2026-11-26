@@ -100,6 +100,7 @@ json app_status(ToolContext&)
 
     // Printer access as the user set it in Preferences (no tool can change it).
     json printers = json::object({{"read_allowed", Printers::read_allowed()}, {"send_allowed", Printers::send_allowed()},
+                                  {"send_unattended", Printers::send_unattended()},
                                   {"sends_in_flight", Printers::sends_in_flight()}});
 #ifdef SLIC3R_MCP_TEST_PRINTERS
     // MCP: test builds only; never set in a release build.

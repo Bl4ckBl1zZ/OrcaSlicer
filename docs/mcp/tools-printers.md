@@ -11,7 +11,7 @@ These are the only tools that reach a printer. They use the printers the applica
 knows, through the application's own code (the device manager, the Print plate job, the print host
 upload). There is still no tool for cloud login, the account or the network plug-in.
 
-## Access: two switches, off by default
+## Access: switches, off by default
 
 Preferences > General > **MCP server (AI agent control)**:
 
@@ -19,18 +19,25 @@ Preferences > General > **MCP server (AI agent control)**:
 |---|---|---|
 | Allow AI agents to read printer status | `mcp_printer_read` | `printer_list`, `printer_status` |
 | Allow AI agents to send print jobs | `mcp_printer_send` | `print_send`, `printer_control` |
+| Send print jobs without asking me | `mcp_printer_send_unattended` | sends and stops without the confirmation window (only while `mcp_printer_send` is on) |
 
-- Both are off by default and independent of each other: a user can allow sending without
+- All are off by default. The first two are independent of each other: a user can allow sending without
   allowing listing, in which case the agent addresses a printer by its exact name.
 - While a switch is off, its tools fail with `printer_access_disabled`; the hint names the switch.
   The refusal is written to the journal (`refused`).
 - No tool can change them. Only the Preferences dialog writes them; no tool argument names them,
   and the code that lets a tool change an application setting for the length of one call refuses
   every `mcp_*` key. An agent that needs access asks the user.
-- Even with sending allowed, every send and every stop waits for the user's click in a
+- With sending allowed, every send and every stop waits for the user's click in a
   [confirmation window](#the-confirmation-window). Pause and resume do not.
+- With **Send print jobs without asking me** also on, no window opens: a request that passes the
+  checks is taken as confirmed and transferred, so the user can have the agent start prints when
+  they are away from the computer (from a phone, for example). Every check, the queue, the temp file
+  and the journal stay as they are; the journal marks these answers `unattended`. Nothing checks
+  the printer physically (a clear bed, a removed part), so the switch is the user's decision to
+  trust the agent with that.
 - `app_status` reports the switches: `"printers": {"read_allowed", "send_allowed",
-  "sends_in_flight"}` (requests waiting for the user or being transferred).
+  "send_unattended", "sends_in_flight"}` (requests waiting for the user or being transferred).
 
 ## What is never returned
 
@@ -316,7 +323,8 @@ Journal: `control` (`{action, rc}` for Bambu Lab, `{action}` or `{action, ok}` f
 
 ## The confirmation window
 
-Every `print_send` and every `stop` opens a window in the application and waits for the user.
+Every `print_send` and every `stop` opens a window in the application and waits for the user,
+unless the user switched on [Send print jobs without asking me](#access-switches-off-by-default).
 
 What it shows:
 
@@ -418,8 +426,8 @@ check in time, and `printer_control`'s `printer_offline` / `printer_status_unkno
 | `status_connect` | `printer_status` | `{}` | The tool selected the printer in the Device tab. |
 | `send_refused` | `print_send` | `{reason, plate}` (host offline / busy: `{reason, state?}`) | A check refused the send. |
 | `send_requested` | `print_send` | `{plate, summary}` (Bambu Lab) or `{plate, options}` (host) | The request was accepted and queued. |
-| `send_asked`, `stop_asked` | `print_send`, `printer_control` | `{job}` | The window opened. |
-| `send_answer`, `stop_answer` | `print_send`, `printer_control` | `{answer: "confirmed" \| "declined" \| "timed_out", job}` | The user answered or the window timed out. |
+| `send_asked`, `stop_asked` | `print_send`, `printer_control` | `{job}`, or `{job, unattended: true}` | The window opened, or (unattended) the request reached its turn. |
+| `send_answer`, `stop_answer` | `print_send`, `printer_control` | `{answer: "confirmed" \| "declined" \| "timed_out", job}`, unattended adds `unattended: true` | The user answered, the window timed out, or (unattended) the request was taken as confirmed. |
 | `send_result` | `print_send` | `{job, ok}` (Bambu Lab adds `status`) | The transfer ended. |
 | `stop_requested` | `printer_control` | `{}` | A stop was queued. |
 | `control` | `printer_control` | `{action, rc}` / `{action}` / `{action, ok}` | A pause, resume or stop command was sent. |
@@ -427,14 +435,15 @@ check in time, and `printer_control`'s `printer_offline` / `printer_status_unkno
 
 ## How to use it as an agent
 
-1. `app_status`: `printers.read_allowed` / `send_allowed`. If a switch you need is off, ask the user
+1. `app_status`: `printers.read_allowed` / `send_allowed` / `send_unattended`. If a switch you need is off, ask the user
    to switch it on in Preferences; do not look for a way around it.
 2. `slice` the plate (`slice_status` until it is `sliced`).
 3. `printer_list`: pick the printer by `id`; check `compatibility.compatible`.
 4. `printer_status` on that printer, right before sending: Bambu Lab printers need a live status,
    and only one is live at a time. Read the trays if you map filaments yourself.
 5. `print_send` with a small `wait_s` (0-10). Tell the user a confirmation window is waiting for
-   them.
+   them. When `send_unattended` is true there is no window and the plate goes out at once: send
+   only what the user asked for.
 6. `job_status` with `wait_s` until the job ends; report the `outcome`.
 7. Never retry a `declined` or `timed_out` send on your own: that was the user's answer. Ask them.
    After `not_sent` or `failed`, read the error, fix the cause and ask before sending again.

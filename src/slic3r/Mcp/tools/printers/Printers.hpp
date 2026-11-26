@@ -16,9 +16,11 @@
 // printer is named by an opaque id: "prn_<10 hex>" for a Bambu printer, "host_<10 hex>" for a host
 // printer, a salted hash (the salt lives in <data_dir>/mcp/printer_salt and never leaves).
 //
-// Access: two Preferences switches, both off by default, that only the Preferences dialog writes:
-//   mcp_printer_read   printer_list, printer_status
-//   mcp_printer_send   print_send, printer_control
+// Access: Preferences switches, all off by default, that only the Preferences dialog writes:
+//   mcp_printer_read              printer_list, printer_status
+//   mcp_printer_send              print_send, printer_control
+//   mcp_printer_send_unattended   sends and stops go ahead without the confirmation window
+//                                 (only while mcp_printer_send is on)
 // Every call of these tools, allowed or refused, is written to the MCP journal (`history`).
 //
 // Main thread only, except where noted.
@@ -45,9 +47,12 @@ namespace Printers {
 
 inline constexpr const char* PREF_READ = "mcp_printer_read";
 inline constexpr const char* PREF_SEND = "mcp_printer_send";
+inline constexpr const char* PREF_SEND_UNATTENDED = "mcp_printer_send_unattended";
 
 bool read_allowed();
 bool send_allowed();
+// The user lets sends and stops through without asking (send_allowed() and its own switch).
+bool send_unattended();
 // Fail with printer_access_disabled (and journal the refusal) unless the switch is on.
 void require_read(ToolContext& ctx);
 void require_send(ToolContext& ctx);

@@ -1,13 +1,14 @@
 // print_send and printer_control: the only MCP code that makes a printer do something.
 //
-// Every send and every stop goes through the user's confirmation window (SendConfirm.hpp). The
-// order of events for a send:
+// Every send and every stop goes through the user's confirmation window (SendConfirm.hpp), unless
+// the user switched on mcp_printer_send_unattended: then the request is taken as confirmed without
+// a window, with every other step unchanged. The order of events for a send:
 //   1. checks, in the call: switch on, plate sliced and current, printer known, compatible, online,
 //      idle, filament mapping valid; any failure is an error result and nothing happens;
 //   2. the file to send is written to a private temp file (what the user confirms is what is sent,
 //      whatever happens to the scene meanwhile), and the call returns a job;
 //   3. the job waits for its turn (one confirmation window at a time, at most MAX_QUEUED waiting),
-//      then for the user's answer: Send, Cancel / close, or the timeout;
+//      then for the user's answer: Send, Cancel / close, or the timeout (unattended: Send at once);
 //   4. only on Send, after checking the printer is still online and idle, the file is transferred.
 
 #include "Printers.hpp"
@@ -382,10 +383,13 @@ json failure_result(const std::shared_ptr<Task>& t, const std::string& code, con
 
 void pump();
 
-void on_answer(const std::shared_ptr<Task>& t, ConfirmAnswer answer)
+void on_answer(const std::shared_ptr<Task>& t, ConfirmAnswer answer, bool unattended = false)
 {
     g_asking = nullptr;
-    audit_later(t->tool, t->action + "_answer", t->printer.id, json::object({{"answer", answer_name(answer)}, {"job", t->job->id}}));
+    json details = json::object({{"answer", answer_name(answer)}, {"job", t->job->id}});
+    if (unattended)
+        details["unattended"] = true;
+    audit_later(t->tool, t->action + "_answer", t->printer.id, std::move(details));
     if (t->withdrawn) {
         end_task(t, Job::State::Cancelled, failure_result(t, "cancelled", "The agent withdrew the request before the user answered.", "cancelled"));
     } else if (answer == ConfirmAnswer::Declined) {
@@ -449,6 +453,13 @@ void pump()
             continue;
         }
         g_asking = t;
+        if (send_unattended()) {
+            // The user chose not to be asked. Answered in a later event, as the window would be, so
+            // the transfer never starts inside the tool call that queued it.
+            audit_later(t->tool, t->action + "_asked", t->printer.id, json::object({{"job", t->job->id}, {"unattended", true}}));
+            wxGetApp().CallAfter([t] { on_answer(t, ConfirmAnswer::Confirmed, true); });
+            return;
+        }
         Jobs::instance().update(t->job, 0., "waiting for the user to confirm in the OrcaSlicer window");
         audit_later(t->tool, t->action + "_asked", t->printer.id, json::object({{"job", t->job->id}}));
         ask_confirmation(t->request, [t](ConfirmAnswer a) { on_answer(t, a); });
@@ -1112,7 +1123,7 @@ json printer_control(ToolContext& ctx)
         return nullptr;
     }
 
-    // stop: the user confirms, like a send.
+    // stop: the user confirms, like a send (unless sends are unattended).
     check_capacity();
     auto task     = std::make_shared<Task>();
     task->tool    = "printer_control";

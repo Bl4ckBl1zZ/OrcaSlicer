@@ -26,14 +26,15 @@ Preferences > General > **MCP server (AI agent control)**:
 | Status | `Listening on http://127.0.0.1:13720/mcp`, `Stopped`, or the reason it is not running. |
 | Allow the agent to edit G-code settings | Off by default. G-code text settings can be read but not changed unless this is on (`mcp_allow_gcode_edit`). |
 | Allow AI agents to read printer status | Off by default. Lets `printer_list` and `printer_status` list the printers and read their state, job, temperatures and filament trays (`mcp_printer_read`). See [tools-printers.md](tools-printers.md). |
-| Allow AI agents to send print jobs | Off by default. Lets `print_send` and `printer_control` ask to send a sliced plate, and pause, resume or stop a print (`mcp_printer_send`). Every send and every stop still needs the user's click in a confirmation window. |
+| Allow AI agents to send print jobs | Off by default. Lets `print_send` and `printer_control` ask to send a sliced plate, and pause, resume or stop a print (`mcp_printer_send`). Every send and every stop still needs the user's click in a confirmation window, unless the next switch is on. |
+| Send print jobs without asking me | Off by default. With sending allowed, sends and stops go out without the confirmation window, so prints can be started while the user is away from the computer (`mcp_printer_send_unattended`). |
 | Connect Claude Code > Copy command | Copies the `claude mcp add ...` command, including the token. |
 | Client configuration > Copy JSON | Copies a `.mcp.json` entry, including the token. |
 | Access token > Copy token | Copies the token alone. |
 | New access token > Regenerate | Replaces the token; clients need the new one. |
 
 The settings are stored in the application configuration as `mcp_enabled`, `mcp_port`,
-`mcp_allow_gcode_edit`, `mcp_printer_read` and `mcp_printer_send`; no tool can change them. The
+`mcp_allow_gcode_edit`, `mcp_printer_read`, `mcp_printer_send` and `mcp_printer_send_unattended`; no tool can change them. The
 token is stored in `<data folder>/mcp/token`. While the server runs,
 `<data folder>/mcp/endpoint.json` holds
 `{"schema": 1, "url", "port", "token", "pid", "protocolVersions", "app", "appVersion"}` for local

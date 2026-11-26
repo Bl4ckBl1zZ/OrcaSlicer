@@ -84,19 +84,18 @@ def hosts():
     moon.stop()
 
 
-@pytest.fixture(scope="module")
-def printers_app(run_dir, hosts):
-    """An instance with both printer switches on, four fake Bambu printers and two host printers."""
+def start_printers_app(run_dir, hosts, name: str, extra_prefs: dict | None = None) -> OrcaApp:
+    """An instance with both printer switches on, four fake Bambu printers and three host printers."""
     octo, moon = hosts
-    data_dir = fresh_data_dir(run_dir, "printers")
-    dump_dir = run_dir / "printers_dump"
+    data_dir = fresh_data_dir(run_dir, name)
+    dump_dir = run_dir / f"{name}_dump"
     if dump_dir.exists():
         for f in dump_dir.iterdir():
             f.unlink()
-    fixture = run_dir / "printers_fixture.json"
+    fixture = run_dir / f"{name}_fixture.json"
     fixture.write_text(json.dumps(fixture_doc(dump_dir), indent=2), encoding="utf-8")
     env = {"ORCA_MCP_FAKE_PRINTERS": str(fixture), "ORCA_MCP_CONFIRM_TIMEOUT_S": str(CONFIRM_TIMEOUT_S)}
-    prefs = {"mcp_printer_read": "true", "mcp_printer_send": "true"}
+    prefs = {"mcp_printer_read": "true", "mcp_printer_send": "true", **(extra_prefs or {})}
 
     # The data directory starts with the Bambu Lab A1 as its only printer model.
     seed_data_dir(data_dir, prefs)
@@ -131,18 +130,58 @@ def printers_app(run_dir, hosts):
 
     app = OrcaApp(data_dir, extra_env=env, app_config=prefs).start()
     app.dump_dir = dump_dir
+    return app
+
+
+def printers_client(app) -> McpClient:
+    c = McpClient(app.url, app.token, era="modern", timeout=300).connect()
+    status = c.tool("app_status")
+    if not status.get("printers", {}).get("fake_printers"):
+        pytest.skip("the application was built without SLIC3R_MCP_TEST_PRINTERS")
+    c.tool("preset_select", type="printer", name=A1_PRESET, on_unsaved="discard")
+    return c
+
+
+def discovered(c: McpClient) -> dict:
+    """{printer name: id}, after every fake printer has been discovered."""
+    deadline = time.monotonic() + 30
+    while True:
+        listing = c.tool("printer_list", probe_hosts=False)
+        found = {p["name"]: p["id"] for p in listing["printers"]}
+        if {"A1 Studio", "A1 Desk", "A1 Garage", "P1S Office", "A1 Octo", "A1 Moon", "A1 Prusa"} <= set(found):
+            return found
+        if time.monotonic() > deadline:
+            pytest.fail(f"printers not discovered: {listing}")
+        time.sleep(1)
+
+
+def slice_two_cubes(c: McpClient) -> dict:
+    """Plate 1: two cubes, filament 1 white and filament 2 black, sliced for the A1."""
+    c.tool("project_new", on_unsaved="discard")
+    filaments = c.tool("filament_list")["filaments"]
+    if len(filaments) < 2:
+        c.tool("filament_edit", action="add", color="#000000")
+    c.tool("filament_edit", action="set_color", filament=1, color="#FFFFFF")
+    c.tool("filament_edit", action="set_color", filament=2, color="#000000")
+    a = c.tool("object_add_primitive", shape="cube", size=[20, 20, 10])["created"][0]["id"]
+    b = c.tool("object_add_primitive", shape="cube", size=[20, 20, 10])["created"][0]["id"]
+    c.tool("object_update", targets=[b], filament=2)
+    c.tool("object_arrange")
+    result = c.tool("slice", wait_s=240)
+    assert result["status"] == "finished", result
+    return {"objects": [a, b]}
+
+
+@pytest.fixture(scope="module")
+def printers_app(run_dir, hosts):
+    app = start_printers_app(run_dir, hosts, "printers")
     yield app
     app.stop()
 
 
 @pytest.fixture(scope="module")
 def pc(printers_app) -> McpClient:
-    c = McpClient(printers_app.url, printers_app.token, era="modern", timeout=300).connect()
-    status = c.tool("app_status")
-    if not status.get("printers", {}).get("fake_printers"):
-        pytest.skip("the application was built without SLIC3R_MCP_TEST_PRINTERS")
-    c.tool("preset_select", type="printer", name=A1_PRESET, on_unsaved="discard")
-    return c
+    return printers_client(printers_app)
 
 
 @pytest.fixture(scope="module")
@@ -152,34 +191,12 @@ def pid(printers_app) -> int:
 
 @pytest.fixture(scope="module")
 def ids(pc) -> dict:
-    """{printer name: id}, after every fake printer has been discovered."""
-    deadline = time.monotonic() + 30
-    while True:
-        listing = pc.tool("printer_list", probe_hosts=False)
-        found = {p["name"]: p["id"] for p in listing["printers"]}
-        if {"A1 Studio", "A1 Desk", "A1 Garage", "P1S Office", "A1 Octo", "A1 Moon", "A1 Prusa"} <= set(found):
-            return found
-        if time.monotonic() > deadline:
-            pytest.fail(f"printers not discovered: {listing}")
-        time.sleep(1)
+    return discovered(pc)
 
 
 @pytest.fixture(scope="module")
 def sliced(pc) -> dict:
-    """Plate 1: two cubes, filament 1 white and filament 2 black, sliced for the A1."""
-    pc.tool("project_new", on_unsaved="discard")
-    filaments = pc.tool("filament_list")["filaments"]
-    if len(filaments) < 2:
-        pc.tool("filament_edit", action="add", color="#000000")
-    pc.tool("filament_edit", action="set_color", filament=1, color="#FFFFFF")
-    pc.tool("filament_edit", action="set_color", filament=2, color="#000000")
-    a = pc.tool("object_add_primitive", shape="cube", size=[20, 20, 10])["created"][0]["id"]
-    b = pc.tool("object_add_primitive", shape="cube", size=[20, 20, 10])["created"][0]["id"]
-    pc.tool("object_update", targets=[b], filament=2)
-    pc.tool("object_arrange")
-    result = pc.tool("slice", wait_s=240)
-    assert result["status"] == "finished", result
-    return {"objects": [a, b]}
+    return slice_two_cubes(pc)
 
 
 def ensure_sliced(pc):
@@ -670,3 +687,44 @@ def test_send_host_with_unknown_state_asks_with_a_warning(pc, ids, sliced, pid):
     assert result["outcome"] == "declined"
     assert any("cannot read the state" in w for w in result["warnings"])
     no_secrets(result)
+
+
+# ---------------------------------------------------------------------------------------------
+# Unattended: the user switched the confirmation window off
+# ---------------------------------------------------------------------------------------------
+
+def test_unattended_sends_and_stops_without_a_window(run_dir, hosts):
+    """With "Send print jobs without asking me" on, a send and a stop go through with no window,
+    and the journal says the answer was not the user's click."""
+    octo, _ = hosts
+    app = start_printers_app(run_dir, hosts, "printers_unattended", {"mcp_printer_send_unattended": "true"})
+    try:
+        c = printers_client(app)
+        assert c.tool("app_status")["printers"]["send_unattended"] is True
+        found = discovered(c)
+        slice_two_cubes(c)
+
+        live(c, found["A1 Desk"])
+        before = len(jobs_dumped(app))
+        result = wait_job(c, send(c, printer=found["A1 Desk"])["job"], timeout=90)
+        assert result["status"] == "finished" and result["result"]["outcome"] == "sent", result
+        assert len(jobs_dumped(app)) == before + 1
+
+        octo.uploads.clear()
+        result = wait_job(c, send(c, printer=found["A1 Octo"])["job"])
+        assert result["result"]["outcome"] == "sent", result
+        assert len(octo.uploads) == 1
+        octo.state.state = "idle"
+
+        garage = found["A1 Garage"]
+        live(c, garage)
+        job = c.tool("printer_control", printer=garage, action="stop", wait_s=0)["job"]
+        assert wait_job(c, job)["result"]["outcome"] == "stopped"
+
+        assert not confirm_ui.find(app.process.pid)
+        answers = [e for e in audit_entries(c) if e["key"] in ("send_answer", "stop_answer")]
+        assert len(answers) == 3, answers
+        assert all(e["after"]["unattended"] is True for e in answers), answers
+    finally:
+        octo.state.state = "idle"
+        app.stop()

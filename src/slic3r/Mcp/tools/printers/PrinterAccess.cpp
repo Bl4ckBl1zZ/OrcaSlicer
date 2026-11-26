@@ -85,6 +85,7 @@ const std::string& salt()
 
 bool read_allowed() { return pref(PREF_READ); }
 bool send_allowed() { return pref(PREF_SEND); }
+bool send_unattended() { return send_allowed() && pref(PREF_SEND_UNATTENDED); }
 
 void require_read(ToolContext& ctx)
 {
