@@ -13,7 +13,8 @@ This is an unofficial build of [OrcaSlicer](https://github.com/OrcaSlicer/OrcaSl
   `127.0.0.1` only and needs an access token: *Preferences > General > MCP server (AI agent control)*.
 - **Printer tools.** `printer_list`, `printer_status`, `print_send` and `printer_control` reach the printers
   OrcaSlicer already knows. Two switches in the same Preferences section enable them, and both are **off by
-  default**. Every print sent and every print stopped also waits for your click in a confirmation window.
+  default**. Every print sent and every print stopped waits for your click in a confirmation window, unless
+  you also switch on *Send print jobs without asking me* (for starting prints from another device).
 
 ## Downloads
 

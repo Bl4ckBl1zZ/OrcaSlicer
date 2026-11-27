@@ -2,11 +2,13 @@ name: Build
 
 # Windows x64 and macOS arm64 builds of this fork, both with the Bambu Linux bridge.
 #
-#   linux-runtime -> windows-x64 (setup .exe + portable zip) \
-#                    macos-arm64 (DMG)                        -> release (v* tags only)
+#   release-tag, linux-runtime -> windows-x64 (setup .exe + portable zip) \
+#                                 macos-arm64 (DMG)                        -> release (pushes only)
 #
-# Runs on demand and for version tags only, on GitHub-hosted runners. A manual run leaves the installers as artifacts of the run; a tag such as
-# v2.5.1-bambu.1 (v<version in version.inc>[-<suffix>]) publishes them as a GitHub release.
+# Runs on demand, for every push to main and for version tags, on GitHub-hosted runners. A manual
+# run leaves the installers as artifacts of the run. A push publishes them as a GitHub release: a
+# tag such as v2.5.1-bambu.1 (v<version in version.inc>[-<suffix>]) under its own name, a push to
+# main under the next free v<version>-bambu.<n>, which the release creates on the pushed commit.
 # The dependency builds are cached; a first run from the default branch fills the caches every
 # later run (tags included) restores.
 
@@ -26,6 +28,8 @@ on:
         type: boolean
         default: false
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -34,12 +38,55 @@ permissions: {}
 
 # A new run replaces a running one for the same ref and the same choice of platforms. The
 # choice is part of the group so that a "macOS only" run does not cancel a Windows build that
-# has been going for hours (all are empty for a tag).
+# has been going for hours (all are empty for a push). A push to main waits instead: every
+# release that starts finishes, and the next one numbers its tag after it.
 concurrency:
   group: build-${{ github.ref }}-win-${{ inputs.windows }}-mac-${{ inputs.macos }}-linux-${{ inputs.linux }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # The name of the release a push publishes, which the installers carry: the pushed tag, or for a
+  # push to main the next v<version>-bambu.<n> after the tags of that version. Empty for a manual
+  # run, whose installers are named after the commit.
+  release-tag:
+    name: Release tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          lfs: 'false'
+          sparse-checkout: version.inc
+          sparse-checkout-cone-mode: false
+
+      - name: Name the release
+        id: tag
+        shell: bash
+        run: |
+          version=$(grep 'set(SoftFever_VERSION' version.inc | cut -d '"' -f2)
+          [ -n "$version" ] || { echo "::error::version.inc has no SoftFever_VERSION"; exit 1; }
+          version_re=$(printf '%s' "$version" | sed 's/[.]/[.]/g')
+          tag=
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            # v2.5.1-bambu.1 on a 2.5.1 build: the tag names the release, the version the setup shows.
+            if ! printf '%s' "$GITHUB_REF_NAME" | grep -Eq "^v${version_re}(-[A-Za-z0-9.]+)?$"; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match the application version $version (expected v$version or v$version-<suffix>)"
+              exit 1
+            fi
+            tag="$GITHUB_REF_NAME"
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            last=$(git ls-remote --tags --refs origin "refs/tags/v${version}-bambu.*" \
+              | sed -nE "s|.*refs/tags/v${version_re}-bambu[.]([0-9]+)$|\\1|p" | sort -n | tail -n 1)
+            tag="v${version}-bambu.$(( ${last:-0} + 1 ))"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release tag: ${tag:-none}"
+
   # The two inputs of the Windows and macOS builds that have to be made on Linux: the runtime host
   # that runs inside the WSL2 distro or OrbStack machine, and the x86-64 root filesystem it uses. All
   # of the logic is in the script, which runs the same way outside Actions.
@@ -148,7 +195,7 @@ jobs:
 
   windows-x64:
     name: Windows x64
-    needs: [linux-runtime, windows-deps]
+    needs: [release-tag, linux-runtime, windows-deps]
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows }}
     # Not upstream's windows-latest: that image carries Visual Studio 2026 and upstream builds on
     # it with clang-cl. The bridge has only ever been compiled with Visual Studio 2022's cl, so
@@ -186,17 +233,16 @@ jobs:
       - name: Name the build
         id: meta
         shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.release-tag.outputs.tag }}
         run: |
           $content = Get-Content version.inc -Raw
           if ($content -notmatch 'set\(SoftFever_VERSION "(.*?)"\)') { throw 'version.inc has no SoftFever_VERSION' }
           $version = $Matches[1]
-          if ($env:GITHUB_REF_TYPE -eq 'tag') {
-            # v2.5.1-bambu.1 on a 2.5.1 build: the tag names the release, the version the setup shows.
-            if ($env:GITHUB_REF_NAME -notmatch "^v$([regex]::Escape($version))(-[A-Za-z0-9.]+)?$") {
-              throw "Tag $env:GITHUB_REF_NAME does not match the application version $version (expected v$version or v$version-<suffix>)."
-            }
-            $label = $env:GITHUB_REF_NAME
-            $setupVersion = $env:GITHUB_REF_NAME.Substring(1)
+          if ($env:RELEASE_TAG) {
+            # The release-tag job checked it: v<version>[-<suffix>]. The setup shows it without the v.
+            $label = $env:RELEASE_TAG
+            $setupVersion = $env:RELEASE_TAG.Substring(1)
           } else {
             $label = "V$version-$($env:GITHUB_SHA.Substring(0, 7))"
             $setupVersion = "$version-$($env:GITHUB_SHA.Substring(0, 7))"
@@ -470,7 +516,7 @@ jobs:
 
   macos-arm64:
     name: macOS arm64
-    needs: [linux-runtime]
+    needs: [release-tag, linux-runtime]
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.macos }}
     # The image upstream builds on; arm64 (Apple Silicon).
     runs-on: macos-15
@@ -499,17 +545,14 @@ jobs:
 
       - name: Name the build
         id: meta
+        env:
+          RELEASE_TAG: ${{ needs.release-tag.outputs.tag }}
         run: |
           version=$(grep 'set(SoftFever_VERSION' version.inc | cut -d '"' -f2)
           [ -n "$version" ] || { echo "version.inc has no SoftFever_VERSION"; exit 1; }
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            # The same rule as the Windows job: v<version> or v<version>-<suffix>.
-            version_re=$(printf '%s' "$version" | sed 's/[.]/[.]/g')
-            if ! printf '%s' "$GITHUB_REF_NAME" | grep -Eq "^v${version_re}(-[A-Za-z0-9.]+)?$"; then
-              echo "::error::Tag $GITHUB_REF_NAME does not match the application version $version"
-              exit 1
-            fi
-            label="$GITHUB_REF_NAME"
+          if [ -n "$RELEASE_TAG" ]; then
+            # The release-tag job checked it, as for Windows.
+            label="$RELEASE_TAG"
           else
             label="V${version}-${GITHUB_SHA:0:7}"
           fi
@@ -759,13 +802,13 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-  # A published (not draft) release for a version tag, with the setup, the portable zip, the DMG,
-  # a .sha256 for each and the notes in .github/release_notes.md. Only tags push here; a manual run
-  # leaves its installers as artifacts of the run.
+  # A published (not draft) release for every push, a version tag or a commit on main, with the
+  # setup, the portable zip, the DMG, a .sha256 for each and the notes in .github/release_notes.md.
+  # A manual run leaves its installers as artifacts of the run.
   release:
     name: Release
-    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
-    needs: [windows-x64, macos-arm64]
+    if: ${{ github.event_name == 'push' && needs.release-tag.outputs.tag != '' }}
+    needs: [release-tag, windows-x64, macos-arm64]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -803,7 +846,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.release-tag.outputs.tag }}
         run: |
           cd dist
           ls -l
@@ -829,6 +872,14 @@ jobs:
             gh release upload "$TAG" "${assets[@]}" --clobber
             gh release edit "$TAG" --draft=false --title "OrcaSlicer Bambu Bridge $TAG" --notes-file "$RUNNER_TEMP/notes.md"
           else
-            gh release create "$TAG" "${assets[@]}" --verify-tag --title "OrcaSlicer Bambu Bridge $TAG"               --notes-file "$RUNNER_TEMP/notes.md"
+            if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+              target=(--verify-tag)
+            else
+              # A push to main: the release creates its tag on the pushed commit. A tag made with
+              # this token starts no workflow, so the commit is not built a second time.
+              target=(--target "$GITHUB_SHA")
+            fi
+            gh release create "$TAG" "${assets[@]}" "${target[@]}" --latest --title "OrcaSlicer Bambu Bridge $TAG" \
+              --notes-file "$RUNNER_TEMP/notes.md"
           fi
           gh release view "$TAG" --json url,isDraft,assets --jq '{url, isDraft, assets: [.assets[] | {name, size}]}'
